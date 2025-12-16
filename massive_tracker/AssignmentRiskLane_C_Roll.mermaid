@@ -1,0 +1,24 @@
+sequenceDiagram
+    autonumber
+    participant MKT as Market Data (S, chain)
+    participant CALC as P/L Engine
+    participant OUT as summary.md
+    participant U as User
+    participant BRK as Broker (Schwab)
+
+    Note over MKT,CALC: Lane C — Roll lane (maintain stock, move cap higher)
+    MKT-->>CALC: S, current call mid C_close, candidate strikes mids C_new
+    CALC->>CALC: net_debit = C_close - C_new_credit
+    CALC->>CALC: new_cap = K_new + C_open - C_close + C_new_credit
+    CALC->>CALC: roll_viable if (upside_expected && liquidity_ok && net_debit acceptable)
+    CALC->>OUT: Recommend "ROLL" with exact target K_new/expiry
+    OUT-->>U: "BTC old call, STO new call" + net credit/debit
+
+    alt User executes roll
+        U->>BRK: BTC current call
+        U->>BRK: STO new call (higher strike / later expiry)
+        BRK-->>U: New covered call active
+        BRK-->>OUT: Contract added to active monitoring list
+    else User skips
+        OUT-->>U: Fall back: assignment lane remains valid
+    end

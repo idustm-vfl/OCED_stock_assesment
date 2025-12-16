@@ -1,0 +1,24 @@
+sequenceDiagram
+    autonumber
+    participant SYS as OCED Tracker
+    participant MKT as Market Data
+    participant CALC as P/L Engine
+    participant OUT as Alerts/summary.md
+
+    Note over SYS,OUT: Trigger logic (same for all tickers)
+    SYS->>MKT: Pull S, C_close, delta (if available), DTE
+    MKT-->>SYS: snapshot
+    SYS->>CALC: Compute Δ = manual_PL - assignment_PL
+    CALC-->>SYS: Δ, near_strike, rapid_up, wide_spread, low_liquidity
+
+    alt Trigger = near_strike (|S-K|/K < 3%)
+        SYS->>OUT: Escalate monitor cadence (hourly)
+    else Trigger = rapid_up (1D return > +5%)
+        SYS->>OUT: Escalate monitor cadence (hourly) + show "close/roll" delta
+    else Trigger = delta meaningful (Δ > $75)
+        SYS->>OUT: Alert "manual action justified"
+    else Trigger = liquidity risk (spread% > 8% or health < 0.35)
+        SYS->>OUT: Alert "execution risk" (prefer assignment or limit orders)
+    else No triggers
+        SYS->>OUT: Keep daily cadence only
+    end

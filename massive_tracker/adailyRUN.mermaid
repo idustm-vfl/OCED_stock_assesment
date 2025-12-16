@@ -1,0 +1,36 @@
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant SYS as OCED Tracker (CLI/run)
+    participant MKT as Market Data (Stock+Options)
+    participant POS as Positions DB (open contracts)
+    participant CALC as P/L Engine
+    participant OUT as summary.md + Alerts
+
+    Note over U,SYS: Daily baseline run (always)
+    U->>SYS: python cli.py run
+    SYS->>POS: Load OPEN contracts + watchlist
+    POS-->>SYS: contracts[]
+    SYS->>MKT: Fetch spot S, option mid C_close, (delta/IV if available), DTE
+    MKT-->>SYS: snapshots
+    SYS->>CALC: Compute metrics + scenarios
+    CALC-->>SYS: assignment_PL, manual_PL, roll_PL, Δ, trigger_flags
+    SYS->>OUT: Write data/logs/*.jsonl + data/reports/summary.md
+    OUT-->>U: One file to review (summary.md)
+
+    alt No triggers (normal lane)
+        Note over SYS,OUT: Low effort / keep system stable
+        SYS->>OUT: Recommendation = HOLD / WAIT
+        OUT-->>U: "No action"
+    else Trigger fires (monitor lane)
+        Note over SYS,MKT: Escalate frequency (hourly) while trigger true
+        SYS->>OUT: Raise Alert + set monitor cadence
+        loop Hourly until trigger clears or expiry/close
+            SYS->>MKT: Refresh S, C_close, delta, DTE
+            MKT-->>SYS: snapshots
+            SYS->>CALC: Recompute scenarios + Δ
+            CALC-->>SYS: updated recommendation
+            SYS->>OUT: Append alert log + update summary.md
+        end
+        OUT-->>U: "Action recommended" + exact numbers
+    end

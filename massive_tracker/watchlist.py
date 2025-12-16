@@ -6,6 +6,16 @@ from .store import DB
 @dataclass
 class Watchlists:
     db: DB
+    
+    def remove_ticker(self, ticker: str) -> None:
+        ticker = ticker.upper().strip()
+        with self.db.connect() as con:
+            con.execute("DELETE FROM tickers WHERE ticker=?", (ticker,))
+
+    def close_contract(self, contract_id: int) -> None:
+        with self.db.connect() as con:
+            con.execute("UPDATE option_positions SET status='CLOSED' WHERE id=?", (int(contract_id),))
+
 
     def add_ticker(self, ticker: str) -> None:
         ticker = ticker.upper().strip()

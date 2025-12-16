@@ -1,0 +1,17 @@
+sequenceDiagram
+    autonumber
+    participant MKT as Market Data (S, C_close)
+    participant CALC as P/L Engine
+    participant OUT as summary.md
+    participant U as User
+    participant BRK as Broker (Schwab)
+
+    Note over MKT,CALC: Lane A — Assignment lane (do nothing)
+    MKT-->>CALC: S, DTE, intrinsic, C_close
+    CALC->>CALC: assignment_PL = C_open + (K - basis)*100
+    CALC->>OUT: Recommend "HOLD TO ASSIGN"
+    OUT-->>U: Shows assignment_PL + why
+    Note over U,BRK: Expiry/assignment event
+    BRK-->>U: Shares called away @ K
+    BRK-->>U: Premium retained (already credited)
+    Note over U,OUT: Outcome logged next day

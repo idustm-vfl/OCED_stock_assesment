@@ -1,0 +1,23 @@
+sequenceDiagram
+    autonumber
+    participant MKT as Market Data (S, C_close)
+    participant CALC as P/L Engine
+    participant OUT as summary.md
+    participant U as User
+    participant BRK as Broker (Schwab)
+
+    Note over MKT,CALC: Lane B — Manual exit lane (buyback + sell stock)
+    MKT-->>CALC: Current stock S, call mid C_close
+    CALC->>CALC: manual_PL = (S - basis)*100 + (C_open - C_close)
+    CALC->>CALC: delta_gain = manual_PL - assignment_PL
+    CALC->>OUT: Recommend "CLOSE NOW" if delta_gain > threshold
+    OUT-->>U: Exact steps + net P/L now
+
+    alt User executes
+        U->>BRK: Buy to Close short call (BTC)
+        U->>BRK: Sell 100 shares (market/limit)
+        BRK-->>U: Position closed (no assignment risk)
+        BRK-->>OUT: Logged outcome (next ingest/rollup)
+    else User skips
+        OUT-->>U: Reminder: assignment_PL remains floor
+    end
