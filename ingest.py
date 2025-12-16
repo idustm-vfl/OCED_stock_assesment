@@ -3,7 +3,9 @@ import os
 import gzip
 import pandas as pd
 import duckdb
-from .config import MassiveConfig
+
+from massive_tracker.config import load_config
+
 from .s3_flatfiles import MassiveS3
 from .store import DB
 
