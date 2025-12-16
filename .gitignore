@@ -1,0 +1,21 @@
+# secrets
+.env
+*.env
+.env.*
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# data outputs
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.parquet
+
+# misc
+.DS_Store
+.ipynb_checkpoints/
