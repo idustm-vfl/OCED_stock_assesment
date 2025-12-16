@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import os
 
+
 @dataclass(frozen=True)
 class MassiveConfig:
     access_key: str
@@ -10,12 +11,13 @@ class MassiveConfig:
     stocks_prefix: str
     options_prefix: str
 
+
 def load_config() -> MassiveConfig:
     def need(name: str) -> str:
-        v = os.getenv(name)
-        if not v:
+        value = os.getenv(name)
+        if not value:
             raise RuntimeError(f"Missing required env var: {name}")
-        return v
+        return value
 
     return MassiveConfig(
         access_key=need("MASSIVE_ACCESS_KEY"),
