@@ -9,8 +9,8 @@ from .summary import generate_summary
 
 from .run_profile import load_profile
 from .config import load_config
-from massive_tracker.store import DB
-from massive_tracker.ingest import ingest_daily
+from .store import DB
+from .ingest import ingest_daily
 from .weekly_rollup import run_weekly_rollup
 from .monitor import run_monitor
 

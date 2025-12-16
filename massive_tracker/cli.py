@@ -13,8 +13,10 @@ from rich import print
 from .config import load_config
 from .store import DB
 from .watchlist import Watchlists
+
 from .ingest import ingest_daily
 from .weekly_rollup import run_weekly_rollup
+
 from .wizard import run_wizard
 from .run import run_once
 

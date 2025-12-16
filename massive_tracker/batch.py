@@ -3,8 +3,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .config import load_config
-from massive_tracker.store import DB
-from massive_tracker.ingest import ingest_daily
+from .store import DB
+from .ingest import ingest_daily
 from .weekly_rollup import run_weekly_rollup
 
 @dataclass
