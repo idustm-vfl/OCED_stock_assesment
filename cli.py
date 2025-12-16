@@ -4,6 +4,8 @@ from .config import MassiveConfig
 from .store import DB
 from .watchlist import Watchlists
 from .ingest import ingest_daily
+from massive_tracker.config import load_config
+
 
 app = typer.Typer()
 
