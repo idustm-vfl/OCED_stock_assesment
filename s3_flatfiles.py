@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
+from massive_tracker.config import MassiveConfig  # or passed in
+
 
 @dataclass
 class S3Object:
