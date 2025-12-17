@@ -61,24 +61,39 @@ def generate_summary() -> None:
     lines.append("## Active Contract Health\n")
 
     if option_feats:
-        df = pd.DataFrame(option_feats)
-        latest = (
-            df.sort_values("ts")
-            .groupby("contract.id", as_index=False)
-            .tail(1)
-        )
+        latest_by_contract = {}
+        for row in option_feats:
+            contract = row.get("contract", {}) or {}
+            cid = contract.get("id")
+            if cid is None:
+                continue
+            latest_by_contract[cid] = row  # last one wins (assumes chronological append)
 
-        for _, r in latest.iterrows():
-            c = r["contract"]
-            f = r["features"]
-            alert = "🚨" if f.get("alert_crash_sell") else "OK"
-            lines.append(
-                f"- **{c['ticker']} {c['expiry']} {c['right']}{c['strike']}** | "
-                f"health={f.get('health_score'):.2f} | "
-                f"dist%={f.get('dist_to_strike_pct'):.2f} | "
-                f"spread%={f.get('spread_pct'):.2f} | "
-                f"alert={alert}"
-            )
+        if latest_by_contract:
+            for row in latest_by_contract.values():
+                c = row.get("contract", {}) or {}
+                f = row.get("features", {}) or {}
+                alert = "🚨" if f.get("alert_crash_sell") else "OK"
+
+                def _num(val):
+                    try:
+                        return float(val)
+                    except Exception:
+                        return None
+
+                health = _num(f.get("health_score"))
+                dist = _num(f.get("dist_to_strike_pct"))
+                spread = _num(f.get("spread_pct"))
+
+                lines.append(
+                    f"- **{c.get('ticker', '?')} {c.get('expiry', '?')} {c.get('right', '?')}{c.get('strike', '?')}** | "
+                    f"health={health if health is not None else 'n/a'} | "
+                    f"dist%={dist if dist is not None else 'n/a'} | "
+                    f"spread%={spread if spread is not None else 'n/a'} | "
+                    f"alert={alert}"
+                )
+        else:
+            lines.append("_No option monitoring data yet._")
     else:
         lines.append("_No option monitoring data yet._")
 

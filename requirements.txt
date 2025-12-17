@@ -6,3 +6,7 @@ pyarrow
 duckdb
 rich
 typer
+requests
+websocket-client
+yfinance
+scikit-learn

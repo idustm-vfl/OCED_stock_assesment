@@ -13,14 +13,15 @@ class S3Object:
     size: int
 
 class MassiveS3:
-    def __init__(self, access_key: str, secret_key: str, endpoint: str):
+    def __init__(self, cfg: MassiveConfig):
+        """Initialize with MassiveConfig object."""
         session = boto3.Session(
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
+            aws_access_key_id=cfg.access_key,
+            aws_secret_access_key=cfg.secret_key,
         )
         self.s3 = session.client(
             "s3",
-            endpoint_url=endpoint,
+            endpoint_url=cfg.endpoint,
             config=BotoConfig(signature_version="s3v4"),
         )
 
@@ -32,9 +33,15 @@ class MassiveS3:
                 out.append(S3Object(key=obj["Key"], size=int(obj["Size"])))
         return out
 
-    def download(self, bucket: str, key: str, dest_path: str) -> None:
+    def download(self, bucket: str, key: str, dest_path: str) -> bool:
+        """Download file, return True if successful, False if not available (404/403)."""
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         try:
             self.s3.download_file(bucket, key, dest_path)
+            return True
         except ClientError as e:
+            code = str(e.response.get("Error", {}).get("Code", ""))
+            if code in ("403", "404", "NoSuchKey", "AccessDenied"):
+                print(f"[skip] not available: s3://{bucket}/{key} ({code})")
+                return False
             raise RuntimeError(f"Download failed for {key}: {e}") from e

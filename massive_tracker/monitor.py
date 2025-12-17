@@ -46,6 +46,7 @@ except ImportError:
 from .store import DB
 from .watchlist import Watchlists
 from .options_features import PositionCC, MarketCC, compute_cc_scenarios
+from .signals import compute_signal_features
 
 
 # ---------------------------
@@ -213,6 +214,19 @@ def _db_try_get_last_option_mid(db: DB, ticker: str, expiry: str, right: str, st
     return None
 
 
+@dataclass(frozen=True)
+class SnapshotOutcome:
+    status: str
+    market: Optional[MarketCC]
+    stock_price: Optional[float]
+    stock_source: Optional[str]
+    option_mid: Optional[float]
+    option_source: Optional[str]
+    option_bid: Optional[float] = None
+    option_ask: Optional[float] = None
+    error: Optional[str] = None
+
+
 # ---------------------------
 # Position detail loader (defensive)
 # ---------------------------
@@ -280,11 +294,21 @@ def get_option_snapshot(
     expiry: str,
     right: str,
     strike: float,
-) -> Tuple[Optional[MarketCC], Optional[str]]:
-    """
-    Returns (MarketCC, error_message).
-    """
+) -> SnapshotOutcome:
     cfg = _massive_rest_config()
+
+    stock_price: Optional[float] = None
+    stock_source: Optional[str] = None
+    call_mid: Optional[float] = None
+    call_source: Optional[str] = None
+    call_bid: Optional[float] = None
+    call_ask: Optional[float] = None
+    error: Optional[str] = None
+    volume = None
+    oi = None
+    dte = None
+    delta = None
+    iv = None
 
     # 1) Massive REST
     if cfg is not None:
@@ -293,48 +317,120 @@ def get_option_snapshot(
             oq = _massive_get_option_quote(cfg, ticker, expiry, right, strike)
             if sq and oq:
                 stock_price_raw = sq.get("price") or sq.get("last") or sq.get("close")
-                if stock_price_raw is None:
-                    return None, "massive_stock_price_missing"
-                stock_price = float(stock_price_raw)
                 bid = oq.get("bid")
                 ask = oq.get("ask")
                 last = oq.get("last")
-                call_mid = _mid(
+                call_mid_raw = _mid(
                     float(bid) if bid is not None else None,
                     float(ask) if ask is not None else None,
                     float(last) if last is not None else None,
                 )
-                if call_mid is None:
-                    return None, "massive_option_mid_missing"
 
-                m = MarketCC(
-                    ts=utc_now(),
-                    stock_price=float(stock_price),
-                    call_mid=float(call_mid),
-                    call_bid=float(bid) if bid is not None else None,
-                    call_ask=float(ask) if ask is not None else None,
-                    call_volume=oq.get("volume"),
-                    call_oi=oq.get("open_interest"),
-                    dte=oq.get("dte"),
-                    delta=oq.get("delta"),
-                    iv=oq.get("iv"),
-                )
-                return m, None
+                if stock_price_raw is not None:
+                    stock_price = float(stock_price_raw)
+                    stock_source = "massive_rest"
+                else:
+                    error = "massive_stock_price_missing"
+
+                if call_mid_raw is not None:
+                    call_mid = float(call_mid_raw)
+                    call_source = "massive_rest"
+                else:
+                    error = error or "massive_option_mid_missing"
+
+                call_bid = float(bid) if bid is not None else None
+                call_ask = float(ask) if ask is not None else None
+                volume = oq.get("volume")
+                oi = oq.get("open_interest")
+                dte = oq.get("dte")
+                delta = oq.get("delta")
+                iv = oq.get("iv")
         except Exception as e:
-            return None, f"massive_rest_error:{e}"
+            error = f"massive_rest_error:{e}"
 
-    # 2) DB fallbacks
-    stock_price = _db_try_get_last_stock_price(db, ticker)
-    call_mid = _db_try_get_last_option_mid(db, ticker, expiry, right, strike)
+    # 2) Local cache from websocket AM bars
+    if stock_price is None:
+        try:
+            cached_price, cached_ts = db.get_market_last(ticker)
+            if cached_price is not None:
+                stock_price = float(cached_price)
+                stock_source = "cache_market_last"
+        except Exception:
+            pass
+
+    # 3) DB fallbacks (daily prices / option mids if present)
+    if stock_price is None:
+        stock_price = _db_try_get_last_stock_price(db, ticker)
+        if stock_price is not None:
+            stock_source = "db_prices_daily"
+
+    if call_mid is None:
+        call_mid = _db_try_get_last_option_mid(db, ticker, expiry, right, strike)
+        if call_mid is not None:
+            call_source = "db_option_quotes"
+
+    # Outcome classification
     if stock_price is not None and call_mid is not None:
-        m = MarketCC(
+        market = MarketCC(
             ts=utc_now(),
             stock_price=float(stock_price),
             call_mid=float(call_mid),
+            call_bid=call_bid,
+            call_ask=call_ask,
+            call_volume=volume,
+            call_oi=oi,
+            dte=dte,
+            delta=delta,
+            iv=iv,
         )
-        return m, None
+        return SnapshotOutcome(
+            status="OK",
+            market=market,
+            stock_price=stock_price,
+            stock_source=stock_source,
+            option_mid=call_mid,
+            option_source=call_source,
+            option_bid=call_bid,
+            option_ask=call_ask,
+        )
 
-    return None, "no_snapshot_source"
+    if stock_price is not None:
+        return SnapshotOutcome(
+            status="PARTIAL_STOCK_ONLY",
+            market=None,
+            stock_price=stock_price,
+            stock_source=stock_source,
+            option_mid=call_mid,
+            option_source=call_source,
+            option_bid=call_bid,
+            option_ask=call_ask,
+            error=error or "option_mid_missing",
+        )
+
+    if call_mid is not None:
+        return SnapshotOutcome(
+            status="PARTIAL_OPTION_ONLY",
+            market=None,
+            stock_price=stock_price,
+            stock_source=stock_source,
+            option_mid=call_mid,
+            option_source=call_source,
+            option_bid=call_bid,
+            option_ask=call_ask,
+            error=error or "stock_price_missing",
+        )
+
+    return SnapshotOutcome(
+        status="ERROR_NO_SNAPSHOT",
+        market=None,
+        stock_price=None,
+        stock_source=stock_source,
+        option_mid=None,
+        option_source=call_source,
+        option_bid=call_bid,
+        option_ask=call_ask,
+        error=error or "no_snapshot_source",
+    )
 
 
 # ---------------------------
@@ -395,11 +491,11 @@ def run_monitor(
             opened_ts=str(opened_ts),
         )
 
-        m, err = get_option_snapshot(db, p.ticker, p.expiry, p.right, p.strike)
-        if m is None:
-            # Log missing snapshot per contract (this is an anomaly lane)
+        outcome = get_option_snapshot(db, p.ticker, p.expiry, p.right, p.strike)
+        if outcome.market is None:
             payload = {
                 "ts": utc_now(),
+                "snapshot_status": outcome.status,
                 "contract": {
                     "id": p.position_id,
                     "ticker": p.ticker,
@@ -407,19 +503,38 @@ def run_monitor(
                     "right": p.right,
                     "strike": p.strike,
                 },
-                "snapshot": {},
+                "snapshot": {
+                    "stock_price": outcome.stock_price,
+                    "stock_source": outcome.stock_source,
+                    "call_mid": outcome.option_mid,
+                    "call_bid": outcome.option_bid,
+                    "call_ask": outcome.option_ask,
+                    "option_source": outcome.option_source,
+                },
                 "features": {
-                    "error": err,
+                    "error": outcome.error,
                     "missing_position_fields": details.get("missing", []),
+                    "snapshot_sources": {
+                        "stock": outcome.stock_source,
+                        "option": outcome.option_source,
+                    },
+                    "signal": compute_signal_features(
+                        [outcome.stock_price] if outcome.stock_price is not None else []
+                    ),
                 },
             }
             log_option_features(payload)
-            print(f"{p.ticker} {p.expiry} {p.right}{p.strike:.2f} | SNAPSHOT_ERROR={err}")
+            print(
+                f"{p.ticker} {p.expiry} {p.right}{p.strike:.2f} | "
+                f"SNAPSHOT_STATUS={outcome.status} ({outcome.error})"
+            )
             continue
+
+        signal_features = compute_signal_features([outcome.market.stock_price])
 
         result = compute_cc_scenarios(
             p,
-            m,
+            outcome.market,
             delta_threshold_action=delta_threshold_action,
             near_strike_pct=near_strike_pct,
         )
@@ -428,6 +543,7 @@ def run_monitor(
 
         payload = {
             "ts": utc_now(),
+            "snapshot_status": outcome.status,
             "contract": {
                 "id": p.position_id,
                 "ticker": p.ticker,
@@ -444,6 +560,11 @@ def run_monitor(
                 "rationale": result["rationale"],
                 "baseline": result["baseline"],
                 "missing_position_fields": details.get("missing", []),
+                "snapshot_sources": {
+                    "stock": outcome.stock_source,
+                    "option": outcome.option_source,
+                },
+                "signal": signal_features,
             },
         }
 

@@ -115,8 +115,14 @@ def run_wizard(db_path: str = "data/sqlite/tracker.db") -> dict:
     auto_ingest = Confirm.ask("Default: ingest daily data on run?", default=bool(profile.get("auto_ingest", True)))
     auto_monitor = Confirm.ask("Default: monitor contracts on run?", default=bool(profile.get("auto_monitor", True)))
     auto_rollup = Confirm.ask("Default: rollup reports on run?", default=bool(profile.get("auto_rollup", True)))
+    auto_oced = Confirm.ask("Default: run OCED scan and store to DB?", default=bool(profile.get("auto_oced", True)))
 
-    profile.update({"auto_ingest": auto_ingest, "auto_monitor": auto_monitor, "auto_rollup": auto_rollup})
+    profile.update({
+        "auto_ingest": auto_ingest,
+        "auto_monitor": auto_monitor,
+        "auto_rollup": auto_rollup,
+        "auto_oced": auto_oced,
+    })
     save_profile(profile)
 
     console.print("\n[green]Saved run profile[/green] -> data/config/run_profile.json")

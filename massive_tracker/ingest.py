@@ -1,59 +1,104 @@
 from __future__ import annotations
 import os
-import gzip
-import pandas as pd
-import duckdb
+from datetime import datetime, timedelta
+from pathlib import Path
 
-from .config import load_config, MassiveConfig
-
+from .config import MassiveConfig
 from .s3_flatfiles import MassiveS3
 from .store import DB
 
-def download_day_file(cfg: MassiveConfig, s3: MassiveS3, yyyy_mm_dd: str, out_dir: str) -> str:
-    yyyy, mm, dd = yyyy_mm_dd.split("-")
-    key = f"{cfg.stocks_prefix}/day_aggregates_v1/{yyyy}/{mm}/{yyyy_mm_dd}.csv.gz"
-    dest = os.path.join(out_dir, cfg.stocks_prefix, "day_aggregates_v1", yyyy, mm, f"{yyyy_mm_dd}.csv.gz")
-    s3.download(cfg.bucket, key, dest)
-    return dest
 
-def filter_to_watchlist(gz_csv_path: str, tickers: list[str]) -> pd.DataFrame:
-    # Fast filter using DuckDB directly on gz
-    con = duckdb.connect(database=":memory:")
-    tickers_list = ",".join([f"'{t}'" for t in tickers])
-    q = f"""
-    SELECT *
-    FROM read_csv_auto('{gz_csv_path}', header=true)
-    WHERE ticker IN ({tickers_list})
+RAW_DIR = Path("data/raw")
+RAW_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _date_str(d: datetime) -> str:
+    return d.strftime("%Y-%m-%d")
+
+
+def _prev_day(date_yyyy_mm_dd: str, n: int = 1) -> str:
+    d = datetime.strptime(date_yyyy_mm_dd, "%Y-%m-%d")
+    return _date_str(d - timedelta(days=n))
+
+
+def _stock_daily_key(cfg: MassiveConfig, date_yyyy_mm_dd: str) -> str:
+    y, m, _ = date_yyyy_mm_dd.split("-")
+    # Massive flatfiles use day_aggs_v1 (not day_aggregates_v1)
+    return f"{cfg.stocks_prefix}/day_aggs_v1/{y}/{m}/{date_yyyy_mm_dd}.csv.gz"
+
+
+def _options_daily_key(cfg: MassiveConfig, date_yyyy_mm_dd: str) -> str:
+    y, m, _ = date_yyyy_mm_dd.split("-")
+    return f"{cfg.options_prefix}/day_aggs_v1/{y}/{m}/{date_yyyy_mm_dd}.csv.gz"
+
+
+def ingest_daily(
+    cfg: MassiveConfig,
+    db: DB,
+    date_yyyy_mm_dd: str,
+    *,
+    max_backshift_days: int = 30,
+    download_stocks: bool = True,
+    download_options: bool = False,
+) -> str:
     """
-    return con.execute(q).fetchdf()
+    Downloads Massive flatfiles for a date into data/raw/... and records an ingest event.
 
-def write_parquet(df: pd.DataFrame, out_path: str) -> None:
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    df.to_parquet(out_path, index=False)
+    Returns the date actually ingested (could be backshifted if requested date not available).
+    """
+    s3 = MassiveS3(cfg)
 
-def ingest_daily(cfg: MassiveConfig, db: DB, yyyy_mm_dd: str, base_dir: str = "data") -> str:
-    s3 = MassiveS3(cfg.access_key, cfg.secret_key, cfg.endpoint)
+    # Ensure folders
+    stocks_out = RAW_DIR / "stocks"
+    options_out = RAW_DIR / "options"
+    stocks_out.mkdir(parents=True, exist_ok=True)
+    options_out.mkdir(parents=True, exist_ok=True)
 
-    # get tickers from db
-    with db.connect() as con:
-        rows = con.execute("SELECT ticker FROM tickers WHERE enabled=1").fetchall()
-    tickers = [r[0] for r in rows]
-    if not tickers:
-        raise RuntimeError("No tickers enabled. Add tickers first.")
+    attempt_date = date_yyyy_mm_dd
+    for i in range(max_backshift_days + 1):
+        ok_stock = True
+        stock_key = stock_dest = None
+        if download_stocks:
+            stock_key = _stock_daily_key(cfg, attempt_date)
+            stock_dest = str(stocks_out / f"{attempt_date}.csv.gz")
+            ok_stock = s3.download(cfg.bucket, stock_key, stock_dest)
 
-    raw_dir = os.path.join(base_dir, "raw")
-    pq_dir  = os.path.join(base_dir, "parquet")
+        ok_opt = True
+        opt_key = opt_dest = None
 
-    gz_path = download_day_file(cfg, s3, yyyy_mm_dd, raw_dir)
-    df = filter_to_watchlist(gz_path, tickers)
+        if download_options:
+            opt_key = _options_daily_key(cfg, attempt_date)
+            opt_dest = str(options_out / f"{attempt_date}.csv.gz")
+            ok_opt = s3.download(cfg.bucket, opt_key, opt_dest)
 
-    out_pq = os.path.join(pq_dir, "stocks_day_agg", f"dt={yyyy_mm_dd}", "data.parquet")
-    write_parquet(df, out_pq)
+        if ok_stock and ok_opt:
+            # Log to DB
+            db.log_event(
+                event_type="ingest_daily",
+                payload={
+                    "date": attempt_date,
+                    "requested_date": date_yyyy_mm_dd,
+                    "backshift_days": i,
+                    "stocks_key": stock_key,
+                    "stocks_dest": stock_dest,
+                    "options_enabled": download_options,
+                    "options_key": opt_key,
+                    "options_dest": opt_dest,
+                    "config": {
+                        "endpoint": cfg.endpoint,
+                        "bucket": cfg.bucket,
+                        "stocks_prefix": cfg.stocks_prefix,
+                        "options_prefix": cfg.options_prefix,
+                    },
+                },
+            )
+            if i > 0:
+                print(f"[backshift] {date_yyyy_mm_dd} -> {attempt_date} (not available, shifted {i} day(s))")
+            return attempt_date
 
-    with db.connect() as con:
-        con.execute(
-            "INSERT OR REPLACE INTO ingest_state(dataset, last_key) VALUES(?, ?)",
-            ("stocks_day_aggregates", gz_path),
-        )
+        # If missing/forbidden, backshift
+        attempt_date = _prev_day(attempt_date, 1)
 
-    return out_pq
+    raise RuntimeError(
+        f"Could not ingest any date within backshift window. Start={date_yyyy_mm_dd} days={max_backshift_days}"
+    )

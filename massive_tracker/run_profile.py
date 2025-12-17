@@ -8,7 +8,8 @@ PROFILE_PATH = Path("data/config/run_profile.json")
 DEFAULT_PROFILE: Dict[str, Any] = {
     "auto_ingest": True,
     "auto_monitor": True,
-    "auto_rollup": True
+    "auto_rollup": True,
+    "auto_oced": True,
 }
 
 def load_profile() -> Dict[str, Any]:
