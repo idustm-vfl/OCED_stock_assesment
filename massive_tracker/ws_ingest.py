@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from datetime import datetime, timezone
 from typing import List
 
@@ -49,6 +50,8 @@ def handle_msgs(db: DB, msgs: List[WebSocketMessage]):
             is_option = "option" in class_val or len(sym) >= 15
 
             if is_option:
+                if "O:" in sym:
+                    sym = sym.split("O:", 1)[-1]
                 ticker, expiry, right, strike = parse_occ_symbol(sym)
 
                 bid = getattr(m, "bid", None)
@@ -81,12 +84,26 @@ def handle_msgs(db: DB, msgs: List[WebSocketMessage]):
                     continue
                 db.set_market_last(ticker=sym, ts=ts, price=price)
 
-
+  
 def main():
     db = DB(DB_PATH)
 
+    api_key = (
+    os.getenv("MASSIVE_API_KEY")
+    or os.getenv("MASSIVE_WS_API_KEY")
+    or os.getenv("MASSIVE_KEY")
+   )
+    
+    if api_key:(
+        print(f"MASSIVE_API_KEY is loaded. (First 5 chars: {api_key[:5]}*****)")
+    )
+    if not api_key:
+        raise RuntimeError("Missing WebSocket API key. Set MASSIVE_API_KEY (or MASSIVE_WS_API_KEY / MASSIVE_KEY).")
+
+    sys.exit(1)
+
     client = WebSocketClient(
-        api_key=os.getenv("MASSIVE_API_KEY") or os.getenv("MASSIVE_ACCESS_KEY"),
+        api_key=api_key,
         feed=Feed.Delayed,
         market=Market.Options,
     )
