@@ -36,13 +36,14 @@ def run_weekly_rollup() -> None:
         [picks.drop(columns=["signal"]), signal_df],
         axis=1,
     )
+    # Flatten decision dict if present
+    if "decision" in picks_flat.columns:
+        decision_df = pd.json_normalize(picks_flat["decision"].tolist())
+        picks_flat = pd.concat(
+            [picks_flat.drop(columns=["decision"]), decision_df],
+            axis=1,
+        )
 
-    # Flatten decision dict
-    decision_df = pd.json_normalize(picks_flat["decision"].tolist())
-    picks_flat = pd.concat(
-        [picks_flat.drop(columns=["decision"]), decision_df],
-        axis=1,
-    )
 
 
     # Join positions to outcomes
