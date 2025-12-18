@@ -115,7 +115,10 @@ def _massive_rest_config() -> Optional[MassiveRestConfig]:
     If not set, this provider is skipped.
     """
     base = os.getenv("MASSIVE_REST_BASE", "").strip()
-    key = os.getenv("MASSIVE_API_KEY", "").strip()
+    key = (
+        os.getenv("MASSIVE_API_KEY", "").strip()
+        or os.getenv("MASSIVE_ACCESS_KEY", "").strip()
+    )
     if not base or not key:
         return None
     return MassiveRestConfig(base_url=base.rstrip("/"), api_key=key)
@@ -310,13 +313,45 @@ def get_option_snapshot(
     delta = None
     iv = None
 
-    # 1) Massive REST
-    if cfg is not None:
+    # 1) Local cache from websocket (preferred)
+    option_cache = db.get_options_last(ticker, expiry, right, strike)
+    if option_cache:
+        call_bid = option_cache.get("bid")
+        call_ask = option_cache.get("ask")
+        last_val = option_cache.get("last")
+        call_mid = option_cache.get("mid")
+        if call_mid is None:
+            call_mid = _mid(call_bid, call_ask, last_val)
+        if call_mid is not None:
+            call_source = "cache_options_last"
+        volume = option_cache.get("volume")
+        oi = option_cache.get("oi")
+        delta = option_cache.get("delta")
+        iv = option_cache.get("iv")
+
+    try:
+        cached_price, _ = db.get_market_last(ticker)
+        if cached_price is not None:
+            stock_price = float(cached_price)
+            stock_source = "cache_market_last"
+    except Exception:
+        pass
+
+    # 2) Massive REST (fill gaps only)
+    if cfg is not None and (stock_price is None or call_mid is None):
         try:
-            sq = _massive_get_stock_quote(cfg, ticker)
-            oq = _massive_get_option_quote(cfg, ticker, expiry, right, strike)
-            if sq and oq:
+            sq = _massive_get_stock_quote(cfg, ticker) if stock_price is None else None
+            oq = _massive_get_option_quote(cfg, ticker, expiry, right, strike) if call_mid is None else None
+
+            if sq:
                 stock_price_raw = sq.get("price") or sq.get("last") or sq.get("close")
+                if stock_price_raw is not None:
+                    stock_price = float(stock_price_raw)
+                    stock_source = "massive_rest"
+                elif stock_price is None:
+                    error = "massive_stock_price_missing"
+
+            if oq:
                 bid = oq.get("bid")
                 ask = oq.get("ask")
                 last = oq.get("last")
@@ -326,37 +361,23 @@ def get_option_snapshot(
                     float(last) if last is not None else None,
                 )
 
-                if stock_price_raw is not None:
-                    stock_price = float(stock_price_raw)
-                    stock_source = "massive_rest"
-                else:
-                    error = "massive_stock_price_missing"
-
                 if call_mid_raw is not None:
                     call_mid = float(call_mid_raw)
                     call_source = "massive_rest"
-                else:
+                elif call_mid is None:
                     error = error or "massive_option_mid_missing"
 
-                call_bid = float(bid) if bid is not None else None
-                call_ask = float(ask) if ask is not None else None
-                volume = oq.get("volume")
-                oi = oq.get("open_interest")
-                dte = oq.get("dte")
-                delta = oq.get("delta")
-                iv = oq.get("iv")
+                if call_bid is None:
+                    call_bid = float(bid) if bid is not None else None
+                if call_ask is None:
+                    call_ask = float(ask) if ask is not None else None
+                volume = volume if volume is not None else oq.get("volume")
+                oi = oi if oi is not None else oq.get("open_interest")
+                dte = dte if dte is not None else oq.get("dte")
+                delta = delta if delta is not None else oq.get("delta")
+                iv = iv if iv is not None else oq.get("iv")
         except Exception as e:
             error = f"massive_rest_error:{e}"
-
-    # 2) Local cache from websocket AM bars
-    if stock_price is None:
-        try:
-            cached_price, cached_ts = db.get_market_last(ticker)
-            if cached_price is not None:
-                stock_price = float(cached_price)
-                stock_source = "cache_market_last"
-        except Exception:
-            pass
 
     # 3) DB fallbacks (daily prices / option mids if present)
     if stock_price is None:

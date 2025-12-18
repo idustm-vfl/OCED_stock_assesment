@@ -1,6 +1,5 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional
 from .store import DB
 
 @dataclass
@@ -35,7 +34,36 @@ class Watchlists:
             rows = con.execute("SELECT ticker FROM tickers WHERE enabled=1 ORDER BY ticker").fetchall()
         return [r[0] for r in rows]
 
-    def add_contract(self, ticker: str, expiry: str, right: str, strike: float, qty: int) -> None:
+    def get_position_details(self, position_id: int) -> dict:
+        with self.db.connect() as con:
+            row = con.execute(
+                """
+                SELECT shares, stock_basis, premium_open
+                FROM option_positions
+                WHERE id=?
+                """,
+                (int(position_id),),
+            ).fetchone()
+        if not row:
+            return {}
+        return {
+            "shares": row[0],
+            "stock_basis": row[1],
+            "premium_open": row[2],
+        }
+
+    def add_contract(
+        self,
+        ticker: str,
+        expiry: str,
+        right: str,
+        strike: float,
+        qty: int,
+        *,
+        shares: int = 100,
+        stock_basis: float = 0.0,
+        premium_open: float = 0.0,
+    ) -> None:
         ticker = ticker.upper().strip()
         right = right.upper().strip()
         if right not in ("C", "P"):
@@ -43,10 +71,19 @@ class Watchlists:
         with self.db.connect() as con:
             con.execute(
                 """
-                INSERT INTO option_positions(ticker, expiry, right, strike, qty)
-                VALUES(?,?,?,?,?)
+                INSERT INTO option_positions(ticker, expiry, right, strike, qty, shares, stock_basis, premium_open)
+                VALUES(?,?,?,?,?,?,?,?)
                 """,
-                (ticker, expiry, right, float(strike), int(qty)),
+                (
+                    ticker,
+                    expiry,
+                    right,
+                    float(strike),
+                    int(qty),
+                    int(shares),
+                    float(stock_basis),
+                    float(premium_open),
+                ),
             )
 
     def list_open_contracts(self):
