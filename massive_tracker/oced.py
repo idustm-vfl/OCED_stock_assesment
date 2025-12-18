@@ -314,7 +314,7 @@ def compute_fractal_roughness(close: np.ndarray) -> float:
 
 
 def _massive_api_key() -> Optional[str]:
-    return os.getenv("MASSIVE_API_KEY") or os.getenv("M_S3_SECRET_ACCESS_KEY")
+    return os.getenv("MASSIVE_API_KEY") or os.getenv("MASSIVE_ACCESS_KEY") or os.getenv("M_S3_SECRET_ACCESS_KEY")
 
 
 def fetch_ohlcv_massive_daily(
