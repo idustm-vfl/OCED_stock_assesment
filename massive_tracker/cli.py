@@ -18,6 +18,7 @@ from .ingest import ingest_daily
 from .weekly_rollup import run_weekly_rollup
 from .picker import run_weekly_picker
 from .oced import run_oced_scan
+from .promotion import promote_from_weekly_picks
 
 from .wizard import run_wizard
 from .run import run_once
@@ -127,6 +128,31 @@ def oced(
     """Run OCED scan (weekly-style signals) and store results in sqlite."""
     rows = run_oced_scan(db_path=db_path, lookback_days=lookback_days)
     print(f"[green]OCED scan complete[/green] -> oced_scores ({len(rows)} rows)")
+
+
+@app.command()
+def promote(
+    db_path: str = "data/sqlite/tracker.db",
+    seed: float = 9300.0,
+    lane: str = "SAFE",
+):
+    """Promote latest weekly_picks into option_positions by budget and lane."""
+    results = promote_from_weekly_picks(db_path=db_path, seed=seed, lane=lane)
+    promoted = [r for r in results if not r.skipped]
+    skipped = [r for r in results if r.skipped]
+
+    for r in promoted:
+        print(
+            f"[green]Promoted[/green] {r.ticker} {r.expiry} C{r.strike} x{r.qty}"
+        )
+    for r in skipped:
+        print(
+            f"[yellow]Skipped[/yellow] {r.ticker} (reason={r.reason})"
+        )
+
+    print(
+        f"[bold]Summary:[/bold] promoted={len(promoted)} skipped={len(skipped)}"
+    )
 
 
 @app.command()
