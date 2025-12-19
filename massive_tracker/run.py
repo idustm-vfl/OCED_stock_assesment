@@ -8,7 +8,7 @@ from .summary import generate_summary
 
 
 from .run_profile import load_profile
-from .config import load_config
+from .config import load_flatfile_config
 from .store import DB
 from .ingest import ingest_daily
 from .weekly_rollup import run_weekly_rollup
@@ -29,38 +29,41 @@ def run_once(db_path: str = "data/sqlite/tracker.db", date: str | None = None) -
 
     ingest_note: str | None = None
     if profile.get("auto_ingest", True):
-        cfg = load_config()
         db = DB(db_path)
+        flat_cfg = load_flatfile_config(required=False)
 
-        # Always pull options (you have access). No-fail.
-        try:
-            opt_date = ingest_daily(
-                cfg,
-                db,
-                date,
-                download_stocks=False,
-                download_options=True,
-            )
-            ingest_note = f"options={opt_date}"
-        except Exception as e:
-            console.print(f"[yellow]Options ingest skipped:[/yellow] {e}")
+        if flat_cfg is None:
+            ingest_note = "flatfile config missing"
+        else:
+            # Always pull options (you have access). No-fail.
+            try:
+                opt_date = ingest_daily(
+                    flat_cfg,
+                    db,
+                    date,
+                    download_stocks=False,
+                    download_options=True,
+                )
+                ingest_note = f"options={opt_date}"
+            except Exception as e:
+                console.print(f"[yellow]Options ingest skipped:[/yellow] {e}")
 
-        # Try stocks, but do not fail run if 403/404.
-        try:
-            stock_date = ingest_daily(
-                cfg,
-                db,
-                date,
-                download_stocks=True,
-                download_options=False,
-            )
-            ingest_note = (
-                f"{ingest_note + '; ' if ingest_note else ''}stocks={stock_date}"
-            )
-        except Exception as e:
-            console.print(f"[yellow]Stocks ingest skipped:[/yellow] {e}")
-            if ingest_note is None:
-                ingest_note = "stocks skipped"
+            # Try stocks, but do not fail run if 403/404.
+            try:
+                stock_date = ingest_daily(
+                    flat_cfg,
+                    db,
+                    date,
+                    download_stocks=True,
+                    download_options=False,
+                )
+                ingest_note = (
+                    f"{ingest_note + '; ' if ingest_note else ''}stocks={stock_date}"
+                )
+            except Exception as e:
+                console.print(f"[yellow]Stocks ingest skipped:[/yellow] {e}")
+                if ingest_note is None:
+                    ingest_note = "stocks skipped"
 
     monitor_ran = False
     if profile.get("auto_monitor", True):

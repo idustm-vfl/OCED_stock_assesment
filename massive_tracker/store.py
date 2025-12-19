@@ -83,6 +83,41 @@ CREATE TABLE IF NOT EXISTS oced_scores (
 
 CREATE INDEX IF NOT EXISTS idx_oced_scores_ticker_ts
   ON oced_scores(ticker, ts);
+
+CREATE TABLE IF NOT EXISTS weekly_picks (
+    ts TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    lane TEXT,
+    rank INTEGER,
+    score REAL,
+    price REAL,
+    pack_100_cost REAL,
+    est_weekly_prem_100 REAL,
+    prem_yield_weekly REAL,
+    safest_flag INTEGER,
+    fft_status TEXT,
+    fractal_status TEXT,
+    source TEXT,
+    PRIMARY KEY (ts, ticker)
+);
+
+CREATE TABLE IF NOT EXISTS option_features (
+    ts TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    expiry TEXT NOT NULL,
+    right TEXT NOT NULL,
+    strike REAL NOT NULL,
+    stock_price REAL,
+    option_mid REAL,
+    spread_pct REAL,
+    intrinsic REAL,
+    time_value REAL,
+    delta_gain REAL,
+    recommendation TEXT,
+    rationale TEXT,
+    snapshot_status TEXT,
+    PRIMARY KEY (ts, ticker, expiry, right, strike)
+);
 """
 
 @dataclass
@@ -210,3 +245,186 @@ class DB:
                 "INSERT OR REPLACE INTO ingest_state(dataset, last_key) VALUES(?, ?)",
                 (event_type, json.dumps(payload)),
             )
+
+    def upsert_weekly_pick(
+        self,
+        *,
+        ts: str,
+        ticker: str,
+        lane: str | None,
+        rank: int | None,
+        score: float | None,
+        price: float | None,
+        pack_100_cost: float | None,
+        est_weekly_prem_100: float | None,
+        prem_yield_weekly: float | None,
+        safest_flag: int | None,
+        fft_status: str | None,
+        fractal_status: str | None,
+        source: str | None,
+    ) -> None:
+        ticker = ticker.upper().strip()
+        with self.connect() as con:
+            con.execute(
+                """
+                INSERT OR REPLACE INTO weekly_picks
+                (ts, ticker, lane, rank, score, price, pack_100_cost, est_weekly_prem_100, prem_yield_weekly, safest_flag, fft_status, fractal_status, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ts,
+                    ticker,
+                    lane,
+                    rank,
+                    score,
+                    price,
+                    pack_100_cost,
+                    est_weekly_prem_100,
+                    prem_yield_weekly,
+                    safest_flag,
+                    fft_status,
+                    fractal_status,
+                    source,
+                ),
+            )
+
+    def fetch_latest_weekly_picks(self) -> list[dict]:
+        with self.connect() as con:
+            ts_row = con.execute("SELECT MAX(ts) FROM weekly_picks").fetchone()
+            if not ts_row or ts_row[0] is None:
+                return []
+            latest_ts = ts_row[0]
+            rows = con.execute(
+                """
+                SELECT ts, ticker, lane, rank, score, price, pack_100_cost, est_weekly_prem_100,
+                       prem_yield_weekly, safest_flag, fft_status, fractal_status, source
+                FROM weekly_picks
+                WHERE ts = ?
+                ORDER BY rank ASC
+                """,
+                (latest_ts,),
+            ).fetchall()
+
+        out: list[dict] = []
+        for r in rows:
+            out.append(
+                {
+                    "ts": r[0],
+                    "ticker": r[1],
+                    "lane": r[2],
+                    "rank": r[3],
+                    "score": r[4],
+                    "price": r[5],
+                    "pack_100_cost": r[6],
+                    "est_weekly_prem_100": r[7],
+                    "prem_yield_weekly": r[8],
+                    "safest_flag": r[9],
+                    "fft_status": r[10],
+                    "fractal_status": r[11],
+                    "source": r[12],
+                }
+            )
+        return out
+
+    def upsert_option_feature(
+        self,
+        *,
+        ts: str,
+        ticker: str,
+        expiry: str,
+        right: str,
+        strike: float,
+        stock_price: float | None,
+        option_mid: float | None,
+        spread_pct: float | None,
+        intrinsic: float | None,
+        time_value: float | None,
+        delta_gain: float | None,
+        recommendation: str | None,
+        rationale: str | None,
+        snapshot_status: str | None,
+    ) -> None:
+        ticker = ticker.upper().strip()
+        right = right.upper().strip()
+        with self.connect() as con:
+            con.execute(
+                """
+                INSERT OR REPLACE INTO option_features
+                (ts, ticker, expiry, right, strike, stock_price, option_mid, spread_pct, intrinsic, time_value, delta_gain, recommendation, rationale, snapshot_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ts,
+                    ticker,
+                    expiry,
+                    right,
+                    float(strike),
+                    stock_price,
+                    option_mid,
+                    spread_pct,
+                    intrinsic,
+                    time_value,
+                    delta_gain,
+                    recommendation,
+                    rationale,
+                    snapshot_status,
+                ),
+            )
+
+    def fetch_latest_option_features(self, limit: int = 200) -> list[dict]:
+        with self.connect() as con:
+            rows = con.execute(
+                """
+                SELECT ts, ticker, expiry, right, strike, stock_price, option_mid, spread_pct, intrinsic, time_value, delta_gain, recommendation, rationale, snapshot_status
+                FROM option_features
+                ORDER BY ts DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        dedup: dict[tuple[str, str, str, float], dict] = {}
+        for r in rows:
+            key = (r[1], r[2], r[3], float(r[4]))
+            if key in dedup:
+                continue
+            dedup[key] = {
+                "ts": r[0],
+                "ticker": r[1],
+                "expiry": r[2],
+                "right": r[3],
+                "strike": float(r[4]),
+                "stock_price": r[5],
+                "option_mid": r[6],
+                "spread_pct": r[7],
+                "intrinsic": r[8],
+                "time_value": r[9],
+                "delta_gain": r[10],
+                "recommendation": r[11],
+                "rationale": r[12],
+                "snapshot_status": r[13],
+            }
+        return list(dedup.values())
+
+    def get_latest_oced_row(self, ticker: str) -> dict | None:
+        ticker = ticker.upper().strip()
+        cols = (
+            "ts, lane, premium_heur_100, premium_ml_100, premium_yield_heur, premium_yield_ml, fft_entropy, fractal_roughness"
+        )
+        with self.connect() as con:
+            row = con.execute(
+                f"SELECT {cols} FROM oced_scores WHERE ticker=? ORDER BY ts DESC LIMIT 1",
+                (ticker,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "ts": row[0],
+            "lane": row[1],
+            "premium_heur_100": row[2],
+            "premium_ml_100": row[3],
+            "premium_yield_heur": row[4],
+            "premium_yield_ml": row[5],
+            "fft_entropy": row[6],
+            "fractal_roughness": row[7],
+        }

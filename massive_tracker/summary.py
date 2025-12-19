@@ -2,123 +2,119 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import datetime, timezone
-import json
-import pandas as pd
+
+from .store import DB
 
 BASE_DATA_DIR = Path("data")
-LOG_DIR = BASE_DATA_DIR / "logs"
 REPORT_DIR = BASE_DATA_DIR / "reports"
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 SUMMARY_PATH = REPORT_DIR / "summary.md"
 
 
-def _read_jsonl(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    rows = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            rows.append(json.loads(line))
-    return rows
+def _bucket_pack_cost(cost: float | None) -> str:
+    if cost is None:
+        return "unknown"
+    if cost < 5000:
+        return "<$5k"
+    if cost < 10000:
+        return "$5k-$10k"
+    return ">$10k"
 
 
-def generate_summary() -> None:
+def generate_summary(db_path: str = "data/sqlite/tracker.db") -> None:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    db = DB(db_path)
 
-    picks = _read_jsonl(LOG_DIR / "weekly_picks.jsonl")
-    option_feats = _read_jsonl(LOG_DIR / "option_features.jsonl")
-    outcomes = _read_jsonl(LOG_DIR / "outcomes.jsonl")
+    picks = db.fetch_latest_weekly_picks()
+
+    with db.connect() as con:
+        open_positions = con.execute(
+            """
+            SELECT id, ticker, expiry, right, strike, qty, status, opened_ts
+            FROM option_positions
+            WHERE status='OPEN'
+            ORDER BY ticker, expiry
+            """
+        ).fetchall()
+
+    opt_health = db.fetch_latest_option_features()
 
     lines: list[str] = []
-    lines.append(f"# OCED Daily Summary\n")
+    lines.append("# OCED Daily Summary\n")
     lines.append(f"**Generated:** {ts}\n")
 
-    # -------------------------------------------------
-    # Recent Picks
-    # -------------------------------------------------
-    lines.append("## Recent Picks\n")
-
+    # Weekly universe picks
+    lines.append("## Weekly Universe Picks\n")
     if picks:
-        df = pd.DataFrame(picks).tail(5)
-        for _, r in df.iterrows():
-            decision = r.get("decision", {})
-            signal = r.get("signal", {})
-            lines.append(
-                f"- **{r['ticker']}** | lane={r.get('lane')} | "
-                f"expiry={decision.get('expiry')} | strike={decision.get('strike')} | "
-                f"est_prem={decision.get('premium_est')} | "
-                f"shape(fractal)={signal.get('fractal_roughness')}"
-            )
-    else:
-        lines.append("_No picks logged yet._")
+        buckets: dict[str, list[dict]] = {}
+        for p in picks:
+            bucket = _bucket_pack_cost(p.get("pack_100_cost"))
+            buckets.setdefault(bucket, []).append(p)
 
-    lines.append("")
-
-    # -------------------------------------------------
-    # Active Contract Health
-    # -------------------------------------------------
-    lines.append("## Active Contract Health\n")
-
-    if option_feats:
-        latest_by_contract = {}
-        for row in option_feats:
-            contract = row.get("contract", {}) or {}
-            cid = contract.get("id")
-            if cid is None:
-                continue
-            latest_by_contract[cid] = row  # last one wins (assumes chronological append)
-
-        if latest_by_contract:
-            for row in latest_by_contract.values():
-                c = row.get("contract", {}) or {}
-                f = row.get("features", {}) or {}
-                alert = "🚨" if f.get("alert_crash_sell") else "OK"
-
-                def _num(val):
-                    try:
-                        return float(val)
-                    except Exception:
-                        return None
-
-                health = _num(f.get("health_score"))
-                dist = _num(f.get("dist_to_strike_pct"))
-                spread = _num(f.get("spread_pct"))
-
+        for bucket, rows in buckets.items():
+            lines.append(f"**{bucket}**")
+            for r in rows:
                 lines.append(
-                    f"- **{c.get('ticker', '?')} {c.get('expiry', '?')} {c.get('right', '?')}{c.get('strike', '?')}** | "
-                    f"health={health if health is not None else 'n/a'} | "
-                    f"dist%={dist if dist is not None else 'n/a'} | "
-                    f"spread%={spread if spread is not None else 'n/a'} | "
-                    f"alert={alert}"
+                    f"- {r['ticker']} | lane={r.get('lane')} | rank={r.get('rank')} | "
+                    f"score={r.get('score'):.3f} | prem_yield={r.get('prem_yield_weekly')}"
                 )
-        else:
-            lines.append("_No option monitoring data yet._")
+            lines.append("")
     else:
-        lines.append("_No option monitoring data yet._")
+        lines.append("_No weekly picks available yet._\n")
 
-    lines.append("")
-
-    # -------------------------------------------------
-    # Recent Outcomes
-    # -------------------------------------------------
-    lines.append("## Recent Outcomes\n")
-
-    if outcomes:
-        df = pd.DataFrame(outcomes).tail(5)
-        for _, r in df.iterrows():
+    # Safest picks
+    lines.append("## Safest Picks\n")
+    safest = [p for p in picks if p.get("lane") == "SAFE"]
+    safest.sort(key=lambda r: r.get("score", 0.0), reverse=True)
+    safest = safest[:5]
+    if safest:
+        for r in safest:
             lines.append(
-                f"- **{r['ticker']} {r['expiry']}** | "
-                f"assigned={r['assigned']} | "
-                f"net_pnl=${r['net_pnl']:.2f}"
+                f"- {r['ticker']} | rank={r.get('rank')} | prem_yield={r.get('prem_yield_weekly')} | price={r.get('price')}"
             )
     else:
-        lines.append("_No completed outcomes logged yet._")
+        lines.append("_No SAFE lane picks._")
+    lines.append("")
+
+    # Best premium yield
+    lines.append("## Best Weekly Premium\n")
+    best = [p for p in picks if p.get("prem_yield_weekly") is not None]
+    best.sort(key=lambda r: r.get("prem_yield_weekly", 0.0), reverse=True)
+    best = best[:5]
+    if best:
+        for r in best:
+            lines.append(
+                f"- {r['ticker']} | yield={r.get('prem_yield_weekly')} | prem_100={r.get('est_weekly_prem_100')} | price={r.get('price')}"
+            )
+    else:
+        lines.append("_No premium estimates available._")
+    lines.append("")
+
+    # Promoted contracts
+    lines.append("## Promoted to Weekly Watch\n")
+    if open_positions:
+        for pid, ticker, expiry, right, strike, qty, status, opened_ts in open_positions:
+            lines.append(
+                f"- {ticker} {expiry} {right}{strike} x{qty} | status={status} | opened={opened_ts}"
+            )
+    else:
+        lines.append("_No promoted contracts (option_positions empty)._")
+    lines.append("")
+
+    # Active contract health
+    lines.append("## Active Contract Health\n")
+    if opt_health:
+        for row in opt_health:
+            lines.append(
+                f"- {row['ticker']} {row['expiry']} {row['right']}{row['strike']} | "
+                f"stock={row.get('stock_price')} | mid={row.get('option_mid')} | "
+                f"Δgain={row.get('delta_gain')} | spread%={row.get('spread_pct')} | status={row.get('snapshot_status')} | rec={row.get('recommendation')}"
+            )
+    else:
+        lines.append("_No option monitoring snapshots yet._")
 
     lines.append("\n---\n")
-    lines.append("### File Locations\n")
-    lines.append("- Logs: `data/logs/`\n")
-    lines.append("- Reports: `data/reports/`\n")
-    lines.append("- Database: `data/sqlite/tracker.db`\n")
+    lines.append("Data source: sqlite (data/sqlite/tracker.db) — weekly_picks, option_features, option_positions\n")
 
     SUMMARY_PATH.write_text("\n".join(lines), encoding="utf-8")

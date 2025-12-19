@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import datetime as dt
 import math
-import os
 import pathlib
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -11,6 +10,7 @@ import numpy as np
 import pandas as pd
 import requests
 
+from .config import CFG
 from .store import DB
 
 # Optional Massive REST client
@@ -314,7 +314,7 @@ def compute_fractal_roughness(close: np.ndarray) -> float:
 
 
 def _massive_api_key() -> Optional[str]:
-    return os.getenv("MASSIVE_API_KEY") or os.getenv("MASSIVE_ACCESS_KEY") or os.getenv("M_S3_SECRET_ACCESS_KEY")
+    return CFG.massive_api_key
 
 
 def fetch_ohlcv_massive_daily(
@@ -401,8 +401,8 @@ def get_ohlcv_daily(
 
 
 def fetch_massive_quote_price(ticker: str) -> Optional[float]:
-    base = os.getenv("MASSIVE_REST_BASE", "").strip()
-    key = os.getenv("MASSIVE_API_KEY", "").strip()
+    base = (CFG.rest_base or "").strip()
+    key = CFG.massive_api_key.strip()
     if not base or not key:
         return None
 
@@ -504,7 +504,7 @@ def load_and_train_premium_model(csv_path: str) -> Tuple[Optional[Any], Optional
 
 PREMIUM_MODEL: Optional[Any] = None
 PREMIUM_MODEL_METRICS: Optional[Dict[str, float]] = None
-HISTORICAL_DATA_PATH = os.getenv("VFL_PREMIUM_HISTORY_CSV", "vfl_option_premium_history.csv")
+HISTORICAL_DATA_PATH = CFG.premium_history_csv
 
 if pathlib.Path(HISTORICAL_DATA_PATH).exists():
     model, metrics = load_and_train_premium_model(HISTORICAL_DATA_PATH)

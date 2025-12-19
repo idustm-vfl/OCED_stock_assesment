@@ -27,7 +27,6 @@ Usage:
 
 from __future__ import annotations
 
-import os
 import json
 import time
 from dataclasses import dataclass
@@ -43,6 +42,7 @@ except ImportError:
         "Install it with: pip install requests"
     )
 
+from .config import CFG
 from .store import DB
 from .watchlist import Watchlists
 from .options_features import PositionCC, MarketCC, compute_cc_scenarios
@@ -114,11 +114,8 @@ def _massive_rest_config() -> Optional[MassiveRestConfig]:
 
     If not set, this provider is skipped.
     """
-    base = os.getenv("MASSIVE_REST_BASE", "").strip()
-    key = (
-        os.getenv("MASSIVE_API_KEY", "").strip()
-        or os.getenv("MASSIVE_ACCESS_KEY", "").strip()
-    )
+    base = (CFG.rest_base or "").strip()
+    key = CFG.massive_api_key.strip()
     if not base or not key:
         return None
     return MassiveRestConfig(base_url=base.rstrip("/"), api_key=key)
@@ -545,6 +542,22 @@ def run_monitor(
                 },
             }
             log_option_features(payload)
+            db.upsert_option_feature(
+                ts=payload["ts"],
+                ticker=p.ticker,
+                expiry=p.expiry,
+                right=p.right,
+                strike=p.strike,
+                stock_price=outcome.stock_price,
+                option_mid=outcome.option_mid,
+                spread_pct=None,
+                intrinsic=None,
+                time_value=None,
+                delta_gain=None,
+                recommendation=None,
+                rationale=outcome.error,
+                snapshot_status=outcome.status,
+            )
             print(
                 f"{p.ticker} {p.expiry} {p.right}{p.strike:.2f} | "
                 f"SNAPSHOT_STATUS={outcome.status} ({outcome.error})"
@@ -590,6 +603,23 @@ def run_monitor(
         }
 
         log_option_features(payload)
+        anomalies = result.get("anomalies", {}) or {}
+        db.upsert_option_feature(
+            ts=payload["ts"],
+            ticker=p.ticker,
+            expiry=p.expiry,
+            right=p.right,
+            strike=p.strike,
+            stock_price=result["market"].get("stock_price"),
+            option_mid=result["market"].get("call_mid"),
+            spread_pct=anomalies.get("spread_pct"),
+            intrinsic=sc.get("intrinsic"),
+            time_value=sc.get("time_value"),
+            delta_gain=sc.get("delta_gain"),
+            recommendation=result.get("recommendation"),
+            rationale=result.get("rationale"),
+            snapshot_status=outcome.status,
+        )
 
         # User-facing one-liner every run
         print(

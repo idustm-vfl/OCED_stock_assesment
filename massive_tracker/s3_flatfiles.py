@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
-from massive_tracker.config import MassiveConfig  # or passed in
+from massive_tracker.config import FlatfileConfig  # or passed in
 
 
 @dataclass
@@ -13,8 +13,8 @@ class S3Object:
     size: int
 
 class MassiveS3:
-    def __init__(self, cfg: MassiveConfig):
-        """Initialize with MassiveConfig object."""
+    def __init__(self, cfg: FlatfileConfig):
+        """Initialize with flatfile config object."""
         session = boto3.Session(
             aws_access_key_id=cfg.access_key,
             aws_secret_access_key=cfg.secret_key,

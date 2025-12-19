@@ -24,7 +24,6 @@ Usage:
 
 from __future__ import annotations
 
-import os
 import json
 import time
 import threading
@@ -33,6 +32,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from .config import CFG
 from .store import DB
 
 try:
@@ -78,7 +78,7 @@ class MassiveWSClient:
         ws_url: Optional[str] = None,
         market_cache_db_path: Optional[str] = None,
     ):
-        self.api_key = api_key or os.getenv("MASSIVE_API_KEY", "")
+        self.api_key = api_key or CFG.massive_api_key
         if not self.api_key:
             raise RuntimeError(
                 "MASSIVE_API_KEY not set. "

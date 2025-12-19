@@ -10,7 +10,7 @@ import typer
 from rich import print
 
 # NOTE: root-level modules => NO relative imports (no leading dots)
-from .config import load_config
+from .config import load_flatfile_config, CFG
 from .store import DB
 from .watchlist import Watchlists
 
@@ -94,7 +94,7 @@ def ingest(
     download_options: bool = False,
 ):
     """Ingest daily aggregates (stocks; optionally options) for YYYY-MM-DD."""
-    cfg = load_config()
+    cfg = load_flatfile_config(required=True)
     out = ingest_daily(
         cfg,
         DB(db_path),
@@ -114,9 +114,9 @@ def rollup():
 
 @app.command()
 def picker(db_path: str = "data/sqlite/tracker.db", top_n: int = 5):
-    """Emit weekly picks into data/logs/weekly_picks.jsonl."""
+    """Emit weekly picks into weekly_picks table."""
     picks = run_weekly_picker(db_path=db_path, top_n=top_n)
-    print(f"[green]Wrote picks[/green] -> data/logs/weekly_picks.jsonl ({len(picks)} rows)")
+    print(f"[green]Wrote picks[/green] to weekly_picks ({len(picks)} rows)")
 
 
 @app.command()
@@ -172,7 +172,10 @@ def stream(
             rapid_up_pct=rapid_up_pct,
             cooldown_sec=cooldown_sec,
         )
-        client = MassiveWSClient(market_cache_db_path=db_path if cache_market_last else None)
+        client = MassiveWSClient(
+            api_key=CFG.massive_api_key,
+            market_cache_db_path=db_path if cache_market_last else None,
+        )
         client.on_aggregate_minute = handler
         client.subscribe(symbols)
         print("[green]Trigger mode:[/green] monitor runs on near-strike or rapid-up events")
@@ -183,7 +186,10 @@ def stream(
             vol = event.get("v")
             print(f"📊 {sym}: ${close:.2f} vol={vol:,}")
 
-        client = MassiveWSClient(market_cache_db_path=db_path if cache_market_last else None)
+        client = MassiveWSClient(
+            api_key=CFG.massive_api_key,
+            market_cache_db_path=db_path if cache_market_last else None,
+        )
         client.on_aggregate_minute = on_bar
         client.subscribe(symbols)
     

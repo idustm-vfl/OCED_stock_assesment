@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from datetime import datetime, timezone
 from typing import List
@@ -10,6 +9,7 @@ from typing import List
 from massive import WebSocketClient
 from massive.websocket.models import WebSocketMessage, Feed, Market
 
+from .config import CFG
 from .store import DB
 
 
@@ -88,17 +88,9 @@ def handle_msgs(db: DB, msgs: List[WebSocketMessage]):
 def main():
     db = DB(DB_PATH)
 
-    api_key = (
-    os.getenv("MASSIVE_API_KEY")
-    or os.getenv("MASSIVE_WS_API_KEY")
-    or os.getenv("MASSIVE_KEY")
-   )
-    
-    if api_key:(
-        print(f"MASSIVE_API_KEY is loaded. (First 5 chars: {api_key[:5]}*****)")
-    )
+    api_key = CFG.massive_api_key
     if not api_key:
-        raise RuntimeError("Missing WebSocket API key. Set MASSIVE_API_KEY (or MASSIVE_WS_API_KEY / MASSIVE_KEY).")
+        raise RuntimeError("Missing WebSocket API key. Set MASSIVE_API_KEY in environment.")
 
     sys.exit(1)
 

@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .config import MassiveConfig
+from .config import FlatfileConfig
 from .s3_flatfiles import MassiveS3
 from .store import DB
 
@@ -21,19 +21,19 @@ def _prev_day(date_yyyy_mm_dd: str, n: int = 1) -> str:
     return _date_str(d - timedelta(days=n))
 
 
-def _stock_daily_key(cfg: MassiveConfig, date_yyyy_mm_dd: str) -> str:
+def _stock_daily_key(cfg: FlatfileConfig, date_yyyy_mm_dd: str) -> str:
     y, m, _ = date_yyyy_mm_dd.split("-")
     # Massive flatfiles use day_aggs_v1 (not day_aggregates_v1)
     return f"{cfg.stocks_prefix}/day_aggs_v1/{y}/{m}/{date_yyyy_mm_dd}.csv.gz"
 
 
-def _options_daily_key(cfg: MassiveConfig, date_yyyy_mm_dd: str) -> str:
+def _options_daily_key(cfg: FlatfileConfig, date_yyyy_mm_dd: str) -> str:
     y, m, _ = date_yyyy_mm_dd.split("-")
     return f"{cfg.options_prefix}/day_aggs_v1/{y}/{m}/{date_yyyy_mm_dd}.csv.gz"
 
 
 def ingest_daily(
-    cfg: MassiveConfig,
+    cfg: FlatfileConfig,
     db: DB,
     date_yyyy_mm_dd: str,
     *,
