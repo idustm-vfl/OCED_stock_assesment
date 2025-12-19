@@ -6,8 +6,6 @@ from datetime import datetime
 
 import streamlit as st
 
-from massive_tracker.config import CFG
-
 from .monitor import run_monitor
 from .picker import run_weekly_picker
 from .promotion import promote_from_weekly_picks
@@ -80,6 +78,9 @@ def _apply_theme() -> None:
 def _load_watchlist(db_path: str) -> List[str]:
     try:
         wl = Watchlists(DB(db_path))
+        if not wl.list_tickers():
+            for t in DEFAULT_UNIVERSE:
+                wl.add_ticker(t)
         return wl.list_tickers()
     except Exception as e:
         st.warning(f"Could not load watchlist: {e}")
@@ -116,6 +117,22 @@ def _ml_status(db_path: str) -> dict:
         return DB(db_path).get_ml_status()
     except Exception as e:
         return {"error": str(e)}
+
+
+def _cost_bucket(cost: float | None) -> str:
+    if cost is None:
+        return "unknown"
+    try:
+        val = float(cost)
+    except Exception:
+        return "unknown"
+    if val <= 5000:
+        return "≤ $5k"
+    if val <= 10000:
+        return "≤ $10k"
+    if val <= 25000:
+        return "≤ $25k"
+    return "> $25k"
 
 
 def _start_stream(
@@ -285,6 +302,19 @@ def main() -> None:
                 st.error(f"Daily pipeline failed: {e}")
                 st.session_state.last_status = f"Daily pipeline failed: {e}"
 
+        if st.button("Approve Weekly Picks → Active Contracts"):
+            try:
+                results = promote_from_weekly_picks(db_path=db_path)
+                promoted = [r for r in results if not r.skipped]
+                st.success(f"Promoted {len(promoted)} picks")
+                st.session_state.last_status = "Picks promoted"
+            except Exception as e:
+                st.error(f"Promotion failed: {e}")
+                st.session_state.last_status = f"Promotion failed: {e}"
+
+        if st.button("Refresh Prices (WebSocket Snapshot)"):
+            st.info("Prices update via live stream; start stream to refresh caches.")
+
         st.markdown("---")
         st.header("Universe")
         wl = Watchlists(DB(db_path))
@@ -368,7 +398,16 @@ def main() -> None:
     with col_main:
         st.markdown("**Latest Weekly Picks**")
         if picks:
-            st.dataframe(picks, use_container_width=True, height=300)
+            buckets: dict[str, list[dict]] = {}
+            for p in picks:
+                bucket = _cost_bucket(p.get("pack_100_cost"))
+                p = dict(p)
+                p["pack_bucket"] = bucket
+                buckets.setdefault(bucket, []).append(p)
+            for bucket_label in ["≤ $5k", "≤ $10k", "≤ $25k", "> $25k", "unknown"]:
+                if bucket_label in buckets:
+                    st.markdown(f"**{bucket_label}**")
+                    st.dataframe(buckets[bucket_label], use_container_width=True, height=200)
         else:
             st.info("No weekly picks yet.")
 

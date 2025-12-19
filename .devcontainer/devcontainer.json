@@ -1,5 +1,13 @@
 {
-  "name": "OCED Stock Assessment",
-  "postCreateCommand": "python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt",
-  "postStartCommand": "bash -lc 'cd /workspaces/OCED_stock_assesment; [ -f .venv/bin/activate ] || python -m venv .venv; ACTLINE=\"source /workspaces/OCED_stock_assesment/.venv/bin/activate\"; grep -qxF \"$ACTLINE\" ~/.bashrc || echo \"$ACTLINE\" >> ~/.bashrc; source /workspaces/OCED_stock_assesment/.venv/bin/activate; pgrep -f \"streamlit run massive_tracker/ui_app.py\" >/dev/null 2>&1 || (nohup streamlit run massive_tracker/ui_app.py --server.port 8501 --server.address 0.0.0.0 >/tmp/streamlit.log 2>&1 &); echo VENV_READY'"
+  "name": "OCED Tracker",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+  "postCreateCommand": "python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt",
+  "postStartCommand": "source .venv/bin/activate",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": ".venv/bin/python"
+      }
+    }
+  }
 }
