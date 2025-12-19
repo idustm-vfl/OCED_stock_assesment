@@ -51,7 +51,7 @@ def promote_from_weekly_picks(
 
     remaining = float(seed)
     results: list[PromotionResult] = []
-    expiry = _next_friday(datetime.utcnow())
+    default_expiry = _next_friday(datetime.utcnow())
 
     # Preload existing open contracts to avoid duplicates
     existing_keys = set()
@@ -72,26 +72,29 @@ def promote_from_weekly_picks(
         pack_cost = pick.get("pack_100_cost")
 
         if not ticker or price is None or pack_cost is None:
-            results.append(PromotionResult(ticker=ticker or "?", expiry=expiry, strike=0.0, qty=0, skipped=True, reason="missing_price"))
+            results.append(PromotionResult(ticker=ticker or "?", expiry=default_expiry, strike=0.0, qty=0, skipped=True, reason="missing_price"))
             continue
 
         if pack_cost > remaining:
-            results.append(PromotionResult(ticker=ticker, expiry=expiry, strike=0.0, qty=0, skipped=True, reason="budget_exhausted"))
+            results.append(PromotionResult(ticker=ticker, expiry=default_expiry, strike=0.0, qty=0, skipped=True, reason="budget_exhausted"))
             continue
 
+        rec_expiry = pick.get("recommended_expiry") or default_expiry
         ml_row = db.get_latest_stock_ml(ticker)
         emove = ml_row.get("expected_move_5d") if ml_row else None
-        strike_raw = select_strike(float(price), emove, lane=pick.get("lane") or lane)
+        strike_raw = pick.get("recommended_strike")
+        if strike_raw is None:
+            strike_raw = select_strike(float(price), emove, lane=pick.get("lane") or lane)
         strike = round(strike_raw if strike_raw is not None else float(price) * 1.05, 2)
-        key = (ticker.upper(), expiry, "C", strike)
+        key = (ticker.upper(), rec_expiry, "C", strike)
         if key in existing_keys:
-            results.append(PromotionResult(ticker=ticker, expiry=expiry, strike=strike, qty=0, skipped=True, reason="already_open"))
+            results.append(PromotionResult(ticker=ticker, expiry=rec_expiry, strike=strike, qty=0, skipped=True, reason="already_open"))
             continue
 
         try:
             wl.add_contract(
                 ticker=ticker,
-                expiry=expiry,
+                expiry=rec_expiry,
                 right="C",
                 strike=strike,
                 qty=1,
@@ -101,9 +104,9 @@ def promote_from_weekly_picks(
             )
             remaining -= pack_cost
             existing_keys.add(key)
-            results.append(PromotionResult(ticker=ticker, expiry=expiry, strike=strike, qty=1))
+            results.append(PromotionResult(ticker=ticker, expiry=rec_expiry, strike=strike, qty=1))
         except Exception as e:
-            results.append(PromotionResult(ticker=ticker, expiry=expiry, strike=strike, qty=0, skipped=True, reason=str(e)))
+            results.append(PromotionResult(ticker=ticker, expiry=rec_expiry, strike=strike, qty=0, skipped=True, reason=str(e)))
 
         if remaining <= 0:
             break

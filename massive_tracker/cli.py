@@ -11,7 +11,7 @@ import typer
 from rich import print
 
 # NOTE: root-level modules => NO relative imports (no leading dots)
-from .config import load_flatfile_config, CFG
+from .config import load_flatfile_config, load_runtime_config
 from .store import DB
 from .watchlist import Watchlists
 
@@ -21,11 +21,22 @@ from .picker import run_weekly_picker
 from .stock_ml import run_stock_ml
 from .oced import run_oced_scan
 from .promotion import promote_from_weekly_picks
+from .flatfiles import download_range, load_option_file
 
 from .wizard import run_wizard
 from .run import run_once
 
 app = typer.Typer(add_completion=False)
+
+
+_CFG_CACHE = None
+
+
+def _cfg():
+    global _CFG_CACHE
+    if _CFG_CACHE is None:
+        _CFG_CACHE = load_runtime_config()
+    return _CFG_CACHE
 
 
 
@@ -166,6 +177,42 @@ def ingest(
 
 
 @app.command()
+def flatfile_download(
+    dataset: str = "us_options_opra/day_aggs_v1",
+    date: str = "2025-12-18",
+    db_path: str = "data/sqlite/tracker.db",
+    load: bool = True,
+):
+    """Download a single Massive flatfile and optionally load into sqlite."""
+    paths = download_range(dataset, date, date)
+    table = "option_bars_1d" if "day" in dataset else "option_bars_1m"
+    loaded = 0
+    for p in paths:
+        if load:
+            loaded += load_option_file(Path(p), db_path, table, ts_hint=date)
+    print(f"[green]Downloaded[/green] {len(paths)} files; loaded rows={loaded} into {table}")
+
+
+@app.command()
+def flatfile_backfill(
+    dataset: str = "us_options_opra/day_aggs_v1",
+    start: str = "2025-10-01",
+    end: str = "2025-12-18",
+    db_path: str = "data/sqlite/tracker.db",
+    load: bool = True,
+):
+    """Backfill a date range; downloads missing files only."""
+    paths = download_range(dataset, start, end)
+    table = "option_bars_1d" if "day" in dataset else "option_bars_1m"
+    loaded = 0
+    for p in paths:
+        if load:
+            ts_hint = p.stem  # YYYY-MM-DD
+            loaded += load_option_file(Path(p), db_path, table, ts_hint=ts_hint)
+    print(f"[green]Backfill complete[/green] files={len(paths)} rows_loaded={loaded} table={table}")
+
+
+@app.command()
 def rollup():
     """Generate CSV reports from JSONL logs."""
     run_weekly_rollup()
@@ -258,7 +305,7 @@ def stream(
             cooldown_sec=cooldown_sec,
         )
         client = MassiveWSClient(
-            api_key=CFG.massive_api_key,
+            api_key=_cfg().massive_api_key,
             market_cache_db_path=db_path if cache_market_last else None,
         )
         client.on_aggregate_minute = handler
@@ -272,7 +319,7 @@ def stream(
             print(f"📊 {sym}: ${close:.2f} vol={vol:,}")
 
         client = MassiveWSClient(
-            api_key=CFG.massive_api_key,
+            api_key=_cfg().massive_api_key,
             market_cache_db_path=db_path if cache_market_last else None,
         )
         client.on_aggregate_minute = on_bar

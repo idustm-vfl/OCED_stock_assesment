@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
 
+from math import sqrt
+
 from .store import DB
-from .stock_ml import run_stock_ml
+from .stock_ml import run_stock_ml, select_strike
 from .watchlist import Watchlists
 from .signals import compute_signal_features
+from .flatfiles import build_strike_candidates
 
 
 LANE_SAFE = {"SAFE", "SAFE_HIGH", "SAFE_HIGH_PAYOUT", "AGGRESSIVE"}
@@ -16,6 +19,21 @@ SAFE_VOL_THRESHOLD = 0.20
 SAFE_MDD_THRESHOLD = 0.20
 SAFE_HIGH_CC_THRESHOLD = 0.58
 SAFE_HIGH_VOL_THRESHOLD = 0.35
+
+
+def _next_friday(base: datetime) -> str:
+    days_ahead = (4 - base.weekday()) % 7
+    return (base + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+
+
+def _signal_status_from_bars(count: int) -> str:
+    if count >= 1950:
+        return "weekly_stable"
+    if count >= 390:
+        return "daily_stable"
+    if count >= 120:
+        return "intraday_ok"
+    return "insufficient_history"
 
 
 def _utc_now() -> str:
@@ -144,6 +162,54 @@ def _ml_rank_adjust(regime_score: float | None, downside_risk_5d: float | None) 
     return regime_boost - downside_penalty
 
 
+def _expected_move(price: float | None, ml_row: dict | None, oced_row: dict | None) -> float | None:
+    if ml_row and ml_row.get("expected_move_5d") is not None:
+        try:
+            return float(ml_row.get("expected_move_5d"))
+        except Exception:
+            pass
+    try:
+        if oced_row and price is not None:
+            ann_vol = oced_row.get("ann_vol")
+            if ann_vol is not None:
+                return float(price) * float(ann_vol) * sqrt(5.0 / 252.0)
+    except Exception:
+        pass
+    if price is not None:
+        return float(price) * 0.02  # 2% proxy
+    return None
+
+
+def _pick_strike_candidate(
+    *,
+    candidates: List[dict],
+    target_strike: float | None,
+    spot: float | None,
+) -> dict | None:
+    if not candidates:
+        return None
+    best = None
+    best_score = float("-inf")
+    for c in candidates:
+        strike = float(c.get("strike")) if c.get("strike") is not None else None
+        if strike is None:
+            continue
+        premium = c.get("close")
+        premium_100 = float(premium) * 100.0 if premium is not None else None
+        yield_proxy = (premium_100 / (spot * 100.0)) if premium_100 and spot else 0.0
+        distance = abs(strike - (target_strike or strike)) / max(spot or strike or 1.0, 1e-6)
+        upside = max(0.0, strike - (spot or 0.0)) / max(spot or 1.0, 1e-6)
+        edge = (c.get("strike_quality_score") or 0.0) - distance + yield_proxy + upside
+        if edge > best_score:
+            best_score = edge
+            best = {
+                **c,
+                "premium_100": premium_100,
+                "edge_score": edge,
+            }
+    return best
+
+
 def run_weekly_picker(
     db_path: str = "data/sqlite/tracker.db",
     *,
@@ -171,12 +237,15 @@ def run_weekly_picker(
         except Exception:
             ml_latest = {}
 
+    expiry = _next_friday(datetime.utcnow())
     picks: list[dict] = []
     for ticker in tickers:
         price, _ = db.get_market_last(ticker)
         oced_row = db.get_latest_oced_row(ticker)
         ml_row = ml_latest.get(ticker.upper()) or db.get_latest_stock_ml(ticker)
+        bar_count = db.price_bar_count(ticker)
         signal = compute_signal_features([price] if price is not None else [])
+        hist_status = _signal_status_from_bars(bar_count)
 
         prem_est, prem_yield = _compute_premium_est(price, oced_row)
         if prem_yield is None and price:
@@ -189,6 +258,23 @@ def run_weekly_picker(
         )
         pack_cost = price * 100.0 if price is not None else None
 
+        exp_move = _expected_move(price, ml_row, oced_row)
+        target_strike = select_strike(price, exp_move, lane=lane)
+        latest_day = db.latest_option_bar_date("option_bars_1d", ticker)
+        strike_candidates = build_strike_candidates(ticker, expiry, latest_day or (datetime.utcnow().strftime("%Y-%m-%d"))) if price else []
+        picked = _pick_strike_candidate(candidates=strike_candidates, target_strike=target_strike, spot=price)
+        if picked:
+            final_score += picked.get("edge_score", 0.0) or 0.0
+            prem_est = picked.get("premium_100") or prem_est
+            prem_yield = _safe_div(prem_est, (price * 100.0) if price is not None else None) if prem_est is not None else prem_yield
+
+        if hist_status == "weekly_stable":
+            fft_status = _resolve_fft_status(signal, oced_row)
+            fractal_status = _resolve_fractal_status(signal, oced_row)
+        else:
+            fft_status = hist_status
+            fractal_status = hist_status
+
         pick = {
             "ts": ts,
             "ticker": ticker.upper(),
@@ -200,10 +286,13 @@ def run_weekly_picker(
             "est_weekly_prem_100": prem_est,
             "prem_yield_weekly": prem_yield,
             "safest_flag": 1 if lane == "SAFE" else 0,
-            "fft_status": _resolve_fft_status(signal, oced_row),
-            "fractal_status": _resolve_fractal_status(signal, oced_row),
+            "fft_status": fft_status,
+            "fractal_status": fractal_status,
             "source": "ws_cache",
             "final_rank_score": float(final_score),
+            "recommended_expiry": expiry,
+            "recommended_strike": picked.get("strike") if picked else None,
+            "recommended_premium_100": picked.get("premium_100") if picked else prem_est,
         }
         picks.append(pick)
 

@@ -61,6 +61,16 @@ OPTION_FEATURES_JSONL = LOG_DIR / "option_features.jsonl"
 MONITOR_EVENTS_JSONL = LOG_DIR / "monitor_events.jsonl"
 
 
+def _hist_status(count: int) -> str:
+    if count >= 1950:
+        return "weekly_stable"
+    if count >= 390:
+        return "daily_stable"
+    if count >= 120:
+        return "intraday_ok"
+    return "insufficient_history"
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -509,8 +519,17 @@ def run_monitor(
             opened_ts=str(opened_ts),
         )
 
+        bar_count = db.price_bar_count(p.ticker)
         outcome = get_option_snapshot(db, p.ticker, p.expiry, p.right, p.strike)
         if outcome.market is None:
+            hist_status = _hist_status(bar_count)
+            signal_features = compute_signal_features(
+                [outcome.stock_price] if outcome.stock_price is not None else []
+            )
+            if hist_status != "weekly_stable":
+                signal_features["fft"]["status"] = hist_status
+                signal_features["fractal"]["status"] = hist_status
+
             payload = {
                 "ts": utc_now(),
                 "snapshot_status": outcome.status,
@@ -536,9 +555,8 @@ def run_monitor(
                         "stock": outcome.stock_source,
                         "option": outcome.option_source,
                     },
-                    "signal": compute_signal_features(
-                        [outcome.stock_price] if outcome.stock_price is not None else []
-                    ),
+                    "signal": signal_features,
+                    "bar_count": bar_count,
                 },
             }
             log_option_features(payload)
@@ -565,6 +583,10 @@ def run_monitor(
             continue
 
         signal_features = compute_signal_features([outcome.market.stock_price])
+        hist_status = _hist_status(bar_count)
+        if hist_status != "weekly_stable":
+            signal_features["fft"]["status"] = hist_status
+            signal_features["fractal"]["status"] = hist_status
 
         result = compute_cc_scenarios(
             p,
@@ -599,6 +621,7 @@ def run_monitor(
                     "option": outcome.option_source,
                 },
                 "signal": signal_features,
+                "bar_count": bar_count,
             },
         }
 

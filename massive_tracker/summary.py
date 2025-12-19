@@ -59,14 +59,15 @@ def generate_summary(db_path: str = "data/sqlite/tracker.db") -> None:
     lines.append(f"**Generated:** {ts}\n")
 
     # Ranked highlights
-    picks_by_score = sorted(picks, key=lambda r: r.get("score", 0.0), reverse=True)
+    picks_by_score = sorted(picks, key=lambda r: r.get("final_rank_score", r.get("score", 0.0)), reverse=True)
     best_pick = picks_by_score[0] if picks_by_score else None
 
     lines.append("## Best Pick (Overall)\n")
     if best_pick:
         ml_note = "(ML rank pending)" if not ml_ready else ""
+        best_score = best_pick.get("final_rank_score") or best_pick.get("score") or 0.0
         lines.append(
-            f"- {best_pick['ticker']} | lane={best_pick.get('lane')} | score={best_pick.get('score'):.3f} | prem_yield={best_pick.get('prem_yield_weekly')} {ml_note}"
+            f"- {best_pick['ticker']} | lane={best_pick.get('lane')} | score={best_score:.3f} | prem_yield={best_pick.get('prem_yield_weekly')} | strike={best_pick.get('recommended_strike')} | expiry={best_pick.get('recommended_expiry')} | fft={best_pick.get('fft_status')} | fractal={best_pick.get('fractal_status')} {ml_note}"
         )
     else:
         lines.append("_No picks yet._")
@@ -108,9 +109,11 @@ def generate_summary(db_path: str = "data/sqlite/tracker.db") -> None:
         for bucket, rows in buckets.items():
             lines.append(f"**{bucket}**")
             for r in rows:
+                score_val = r.get("final_rank_score") or r.get("score") or 0.0
                 lines.append(
                     f"- {r['ticker']} | lane={r.get('lane')} | rank={r.get('rank')} | "
-                    f"score={r.get('score'):.3f} | prem_yield={r.get('prem_yield_weekly')}"
+                    f"score={score_val:.3f} | prem_yield={r.get('prem_yield_weekly')} | "
+                    f"strike={r.get('recommended_strike')} | expiry={r.get('recommended_expiry')} | fft={r.get('fft_status')} | fractal={r.get('fractal_status')}"
                 )
             lines.append("")
     else:

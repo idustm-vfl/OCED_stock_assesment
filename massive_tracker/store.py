@@ -99,6 +99,9 @@ CREATE TABLE IF NOT EXISTS weekly_picks (
     fft_status TEXT,
     fractal_status TEXT,
     source TEXT,
+    recommended_expiry TEXT,
+    recommended_strike REAL,
+    recommended_premium_100 REAL,
     PRIMARY KEY (ts, ticker)
 );
 
@@ -142,6 +145,38 @@ CREATE TABLE IF NOT EXISTS option_outcomes (
     PRIMARY KEY (ticker, expiry, right, strike)
 );
 
+CREATE TABLE IF NOT EXISTS option_bars_1m (
+    ts TEXT NOT NULL,
+    contract TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    expiry TEXT NOT NULL,
+    right TEXT NOT NULL,
+    strike REAL NOT NULL,
+    o REAL,
+    h REAL,
+    l REAL,
+    c REAL,
+    v INTEGER,
+    transactions INTEGER,
+    PRIMARY KEY (ts, contract)
+);
+
+CREATE TABLE IF NOT EXISTS option_bars_1d (
+    ts TEXT NOT NULL,
+    contract TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    expiry TEXT NOT NULL,
+    right TEXT NOT NULL,
+    strike REAL NOT NULL,
+    o REAL,
+    h REAL,
+    l REAL,
+    c REAL,
+    v INTEGER,
+    transactions INTEGER,
+    PRIMARY KEY (ts, contract)
+);
+
 CREATE TABLE IF NOT EXISTS price_bars_1m (
     ts TEXT NOT NULL,
     ticker TEXT NOT NULL,
@@ -177,6 +212,7 @@ class DB:
         self._ensure_option_position_columns(con)
         self._ensure_oced_columns(con)
         self._ensure_weekly_pick_columns(con)
+        self._ensure_option_bar_tables(con)
 
     def _ensure_option_position_columns(self, con: sqlite3.Connection) -> None:
         rows = con.execute("PRAGMA table_info(option_positions)").fetchall()
@@ -203,6 +239,52 @@ class DB:
         existing_cols = {row[1] for row in rows}
         if "final_rank_score" not in existing_cols:
             con.execute("ALTER TABLE weekly_picks ADD COLUMN final_rank_score REAL")
+        if "recommended_expiry" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN recommended_expiry TEXT")
+        if "recommended_strike" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN recommended_strike REAL")
+        if "recommended_premium_100" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN recommended_premium_100 REAL")
+
+    def _ensure_option_bar_tables(self, con: sqlite3.Connection) -> None:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS option_bars_1m (
+                ts TEXT NOT NULL,
+                contract TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                expiry TEXT NOT NULL,
+                right TEXT NOT NULL,
+                strike REAL NOT NULL,
+                o REAL,
+                h REAL,
+                l REAL,
+                c REAL,
+                v INTEGER,
+                transactions INTEGER,
+                PRIMARY KEY (ts, contract)
+            )
+            """
+        )
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS option_bars_1d (
+                ts TEXT NOT NULL,
+                contract TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                expiry TEXT NOT NULL,
+                right TEXT NOT NULL,
+                strike REAL NOT NULL,
+                o REAL,
+                h REAL,
+                l REAL,
+                c REAL,
+                v INTEGER,
+                transactions INTEGER,
+                PRIMARY KEY (ts, contract)
+            )
+            """
+        )
 
     def set_market_last(self, ticker: str, ts: str, price: float) -> None:
         ticker = ticker.upper().strip()
@@ -319,14 +401,17 @@ class DB:
         fractal_status: str | None,
         source: str | None,
         final_rank_score: float | None,
+        recommended_expiry: str | None,
+        recommended_strike: float | None,
+        recommended_premium_100: float | None,
     ) -> None:
         ticker = ticker.upper().strip()
         with self.connect() as con:
             con.execute(
                 """
                 INSERT OR REPLACE INTO weekly_picks
-                (ts, ticker, lane, rank, score, price, pack_100_cost, est_weekly_prem_100, prem_yield_weekly, safest_flag, fft_status, fractal_status, source, final_rank_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (ts, ticker, lane, rank, score, price, pack_100_cost, est_weekly_prem_100, prem_yield_weekly, safest_flag, fft_status, fractal_status, source, final_rank_score, recommended_expiry, recommended_strike, recommended_premium_100)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ts,
@@ -343,6 +428,9 @@ class DB:
                     fractal_status,
                     source,
                     final_rank_score,
+                    recommended_expiry,
+                    recommended_strike,
+                    recommended_premium_100,
                 ),
             )
 
@@ -354,8 +442,9 @@ class DB:
             latest_ts = ts_row[0]
             rows = con.execute(
                 """
-                SELECT ts, ticker, lane, rank, score, price, pack_100_cost, est_weekly_prem_100,
-                       prem_yield_weekly, safest_flag, fft_status, fractal_status, source, final_rank_score
+                  SELECT ts, ticker, lane, rank, score, price, pack_100_cost, est_weekly_prem_100,
+                      prem_yield_weekly, safest_flag, fft_status, fractal_status, source, final_rank_score,
+                      recommended_expiry, recommended_strike, recommended_premium_100
                 FROM weekly_picks
                 WHERE ts = ?
                 ORDER BY rank ASC
@@ -381,6 +470,9 @@ class DB:
                     "fractal_status": r[11],
                     "source": r[12],
                     "final_rank_score": r[13],
+                    "recommended_expiry": r[14],
+                    "recommended_strike": r[15],
+                    "recommended_premium_100": r[16],
                 }
             )
         return out
@@ -582,6 +674,26 @@ class DB:
                 (ts, ticker, o, h, l, c, v),
             )
 
+    def insert_option_bars(self, table: str, rows: list[tuple]) -> None:
+        if not rows:
+            return
+        table_safe = "option_bars_1m" if table == "option_bars_1m" else "option_bars_1d"
+        with self.connect() as con:
+            con.executemany(
+                f"INSERT OR REPLACE INTO {table_safe}(ts, contract, ticker, expiry, right, strike, o, h, l, c, v, transactions) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+
+    def latest_option_bar_date(self, table: str, ticker: str) -> str | None:
+        table_safe = "option_bars_1m" if table == "option_bars_1m" else "option_bars_1d"
+        ticker = ticker.upper().strip()
+        with self.connect() as con:
+            row = con.execute(
+                f"SELECT MAX(ts) FROM {table_safe} WHERE ticker=?",
+                (ticker,),
+            ).fetchone()
+            return row[0] if row and row[0] else None
+
     def get_oced_stats(self) -> dict:
         with self.connect() as con:
             rows = con.execute("SELECT COUNT(*), MAX(ts), COUNT(DISTINCT ticker) FROM oced_scores").fetchone()
@@ -628,6 +740,8 @@ class DB:
             option_features_count = con.execute("SELECT COUNT(*) FROM option_features").fetchone()[0]
             weekly_picks_count = con.execute("SELECT COUNT(*) FROM weekly_picks").fetchone()[0]
             stock_ml_count = con.execute("SELECT COUNT(*) FROM stock_ml_signals").fetchone()[0]
+            option_1d_count = con.execute("SELECT COUNT(*) FROM option_bars_1d").fetchone()[0]
+            option_1m_count = con.execute("SELECT COUNT(*) FROM option_bars_1m").fetchone()[0]
 
             bars_table_exists = (
                 con.execute(
@@ -654,6 +768,8 @@ class DB:
         return {
             "option_features_rows": option_features_count,
             "weekly_picks_rows": weekly_picks_count,
+            "option_bars_1d_rows": option_1d_count,
+            "option_bars_1m_rows": option_1m_count,
             "price_bars_1m_rows": bars_count,
             "price_bars_series_len_max": series_len,
             "price_bars_series_len_top": bar_dist,
