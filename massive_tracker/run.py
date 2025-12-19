@@ -14,6 +14,7 @@ from .ingest import ingest_daily
 from .weekly_rollup import run_weekly_rollup
 from .monitor import run_monitor
 from .picker import run_weekly_picker
+from .stock_ml import run_stock_ml
 from .oced import run_oced_scan
 
 console = Console()
@@ -74,9 +75,18 @@ def run_once(db_path: str = "data/sqlite/tracker.db", date: str | None = None) -
             console.print(f"[yellow]Monitor skipped:[/yellow] {e}")
 
     picks_ran = False
+    ml_note = "skipped"
     if profile.get("auto_picker", True):
         try:
-            run_weekly_picker(db_path=db_path)
+            run_stock_ml(db_path=db_path)
+            ml_note = "ran"
+        except Exception as e:
+            console.print(f"[yellow]Stock ML skipped:[/yellow] {e}")
+            ml_note = "error"
+
+    if profile.get("auto_picker", True):
+        try:
+            run_weekly_picker(db_path=db_path, run_stock_ml_first=False)
             picks_ran = True
         except Exception as e:
             console.print(f"[yellow]Picker skipped:[/yellow] {e}")
@@ -100,6 +110,7 @@ def run_once(db_path: str = "data/sqlite/tracker.db", date: str | None = None) -
     t.add_row("Ingest date", date)
     t.add_row("Ingest output", ingest_note or "(disabled)")
     t.add_row("Monitor", "ran" if monitor_ran else "skipped/disabled")
+    t.add_row("Stock ML", ml_note)
     t.add_row("Picker", "ran" if picks_ran else "skipped/disabled")
     t.add_row("OCED", oced_note)
     t.add_row("Reports", "data/reports/")

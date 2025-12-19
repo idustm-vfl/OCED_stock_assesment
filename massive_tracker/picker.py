@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from .store import DB
+from .stock_ml import run_stock_ml
 from .watchlist import Watchlists
 from .signals import compute_signal_features
 
@@ -127,10 +128,28 @@ def _final_rank_score(prem_yield: float | None, oced_row: dict | None) -> float:
     return (2.0 * yield_score) + cc_suit - (0.75 * risk_penalty)
 
 
+def _ml_rank_adjust(regime_score: float | None, downside_risk_5d: float | None) -> float:
+    try:
+        regime = float(regime_score) if regime_score is not None else 0.0
+    except Exception:
+        regime = 0.0
+    try:
+        downside = float(downside_risk_5d) if downside_risk_5d is not None else 0.0
+    except Exception:
+        downside = 0.0
+
+    # Up-trend boost; downside (typically negative) penalized modestly to avoid overfitting.
+    regime_boost = 5.0 * regime
+    downside_penalty = 20.0 * abs(min(downside, 0.0))
+    return regime_boost - downside_penalty
+
+
 def run_weekly_picker(
     db_path: str = "data/sqlite/tracker.db",
     *,
     top_n: int = 10,
+    lookback_days: int = 500,
+    run_stock_ml_first: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     Build weekly ticker-level picks from DB caches and OCED scores.
@@ -144,17 +163,30 @@ def run_weekly_picker(
     tickers = wl.list_tickers()
     ts = _utc_now()
 
+    ml_latest: dict[str, dict] = {}
+    if run_stock_ml_first:
+        try:
+            ml_rows = run_stock_ml(db_path=db_path, lookback_days=lookback_days)
+            ml_latest = {r["ticker"].upper(): r for r in ml_rows if r.get("ticker")}
+        except Exception:
+            ml_latest = {}
+
     picks: list[dict] = []
     for ticker in tickers:
         price, _ = db.get_market_last(ticker)
         oced_row = db.get_latest_oced_row(ticker)
+        ml_row = ml_latest.get(ticker.upper()) or db.get_latest_stock_ml(ticker)
         signal = compute_signal_features([price] if price is not None else [])
 
         prem_est, prem_yield = _compute_premium_est(price, oced_row)
         if prem_yield is None and price:
             prem_yield = _safe_div(1.0, price)  # simple proxy if premium unknown
         lane = _resolve_lane(oced_row)
-        final_score = _final_rank_score(prem_yield, oced_row)
+        base_score = _final_rank_score(prem_yield, oced_row)
+        final_score = base_score + _ml_rank_adjust(
+            regime_score=ml_row.get("regime_score") if ml_row else None,
+            downside_risk_5d=ml_row.get("downside_risk_5d") if ml_row else None,
+        )
         pack_cost = price * 100.0 if price is not None else None
 
         pick = {
@@ -162,7 +194,7 @@ def run_weekly_picker(
             "ticker": ticker.upper(),
             "lane": lane,
             "rank": None,
-            "score": float(final_score),
+            "score": float(base_score),
             "price": price,
             "pack_100_cost": pack_cost,
             "est_weekly_prem_100": prem_est,
@@ -171,10 +203,11 @@ def run_weekly_picker(
             "fft_status": _resolve_fft_status(signal, oced_row),
             "fractal_status": _resolve_fractal_status(signal, oced_row),
             "source": "ws_cache",
+            "final_rank_score": float(final_score),
         }
         picks.append(pick)
 
-    picks.sort(key=lambda p: p.get("score", 0.0), reverse=True)
+    picks.sort(key=lambda p: p.get("final_rank_score", p.get("score", 0.0) or 0.0), reverse=True)
     picks = picks[: top_n or len(picks)]
 
     for idx, pick in enumerate(picks, start=1):

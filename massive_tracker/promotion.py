@@ -6,6 +6,7 @@ from typing import List, Dict
 
 from .store import DB
 from .watchlist import Watchlists
+from .stock_ml import select_strike
 
 
 def _next_friday(base: datetime) -> str:
@@ -46,7 +47,7 @@ def promote_from_weekly_picks(
         picks = [p for p in picks if (p.get("lane") or "").upper() == lane.upper()]
 
     # Sort by rank (ascending), then score desc as fallback
-    picks.sort(key=lambda p: (p.get("rank") or 9999, -(p.get("score") or 0)))
+    picks.sort(key=lambda p: (p.get("rank") or 9999, -(p.get("final_rank_score") or p.get("score") or 0)))
 
     remaining = float(seed)
     results: list[PromotionResult] = []
@@ -78,7 +79,10 @@ def promote_from_weekly_picks(
             results.append(PromotionResult(ticker=ticker, expiry=expiry, strike=0.0, qty=0, skipped=True, reason="budget_exhausted"))
             continue
 
-        strike = round(float(price) * 1.05, 2)  # ~5% OTM covered call
+        ml_row = db.get_latest_stock_ml(ticker)
+        emove = ml_row.get("expected_move_5d") if ml_row else None
+        strike_raw = select_strike(float(price), emove, lane=pick.get("lane") or lane)
+        strike = round(strike_raw if strike_raw is not None else float(price) * 1.05, 2)
         key = (ticker.upper(), expiry, "C", strike)
         if key in existing_keys:
             results.append(PromotionResult(ticker=ticker, expiry=expiry, strike=strike, qty=0, skipped=True, reason="already_open"))

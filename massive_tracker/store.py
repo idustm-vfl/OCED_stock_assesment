@@ -120,6 +120,28 @@ CREATE TABLE IF NOT EXISTS option_features (
     PRIMARY KEY (ts, ticker, expiry, right, strike)
 );
 
+CREATE TABLE IF NOT EXISTS stock_ml_signals (
+    ts TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    price REAL,
+    vol_forecast_5d REAL,
+    downside_risk_5d REAL,
+    regime_score REAL,
+    expected_move_5d REAL,
+    PRIMARY KEY (ts, ticker)
+);
+
+CREATE TABLE IF NOT EXISTS option_outcomes (
+    ticker TEXT NOT NULL,
+    expiry TEXT NOT NULL,
+    right TEXT NOT NULL,
+    strike REAL NOT NULL,
+    label TEXT NOT NULL,
+    close_price REAL,
+    labeled_ts TEXT NOT NULL,
+    PRIMARY KEY (ticker, expiry, right, strike)
+);
+
 CREATE TABLE IF NOT EXISTS price_bars_1m (
     ts TEXT NOT NULL,
     ticker TEXT NOT NULL,
@@ -154,6 +176,7 @@ class DB:
     def _apply_migrations(self, con: sqlite3.Connection) -> None:
         self._ensure_option_position_columns(con)
         self._ensure_oced_columns(con)
+        self._ensure_weekly_pick_columns(con)
 
     def _ensure_option_position_columns(self, con: sqlite3.Connection) -> None:
         rows = con.execute("PRAGMA table_info(option_positions)").fetchall()
@@ -174,6 +197,12 @@ class DB:
 
         if "max_drawdown" not in existing_cols:
             con.execute("ALTER TABLE oced_scores ADD COLUMN max_drawdown REAL")
+
+    def _ensure_weekly_pick_columns(self, con: sqlite3.Connection) -> None:
+        rows = con.execute("PRAGMA table_info(weekly_picks)").fetchall()
+        existing_cols = {row[1] for row in rows}
+        if "final_rank_score" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN final_rank_score REAL")
 
     def set_market_last(self, ticker: str, ts: str, price: float) -> None:
         ticker = ticker.upper().strip()
@@ -289,14 +318,15 @@ class DB:
         fft_status: str | None,
         fractal_status: str | None,
         source: str | None,
+        final_rank_score: float | None,
     ) -> None:
         ticker = ticker.upper().strip()
         with self.connect() as con:
             con.execute(
                 """
                 INSERT OR REPLACE INTO weekly_picks
-                (ts, ticker, lane, rank, score, price, pack_100_cost, est_weekly_prem_100, prem_yield_weekly, safest_flag, fft_status, fractal_status, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (ts, ticker, lane, rank, score, price, pack_100_cost, est_weekly_prem_100, prem_yield_weekly, safest_flag, fft_status, fractal_status, source, final_rank_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ts,
@@ -312,6 +342,7 @@ class DB:
                     fft_status,
                     fractal_status,
                     source,
+                    final_rank_score,
                 ),
             )
 
@@ -324,7 +355,7 @@ class DB:
             rows = con.execute(
                 """
                 SELECT ts, ticker, lane, rank, score, price, pack_100_cost, est_weekly_prem_100,
-                       prem_yield_weekly, safest_flag, fft_status, fractal_status, source
+                       prem_yield_weekly, safest_flag, fft_status, fractal_status, source, final_rank_score
                 FROM weekly_picks
                 WHERE ts = ?
                 ORDER BY rank ASC
@@ -349,6 +380,7 @@ class DB:
                     "fft_status": r[10],
                     "fractal_status": r[11],
                     "source": r[12],
+                    "final_rank_score": r[13],
                 }
             )
         return out
@@ -461,6 +493,77 @@ class DB:
             "fractal_roughness": row[11],
         }
 
+    def upsert_stock_ml_signal(
+        self,
+        *,
+        ts: str,
+        ticker: str,
+        price: float | None,
+        vol_forecast_5d: float | None,
+        downside_risk_5d: float | None,
+        regime_score: float | None,
+        expected_move_5d: float | None,
+    ) -> None:
+        ticker = ticker.upper().strip()
+        with self.connect() as con:
+            con.execute(
+                """
+                INSERT OR REPLACE INTO stock_ml_signals
+                (ts, ticker, price, vol_forecast_5d, downside_risk_5d, regime_score, expected_move_5d)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (ts, ticker, price, vol_forecast_5d, downside_risk_5d, regime_score, expected_move_5d),
+            )
+
+    def get_latest_stock_ml(self, ticker: str) -> dict | None:
+        ticker = ticker.upper().strip()
+        with self.connect() as con:
+            row = con.execute(
+                "SELECT ts, price, vol_forecast_5d, downside_risk_5d, regime_score, expected_move_5d FROM stock_ml_signals WHERE ticker=? ORDER BY ts DESC LIMIT 1",
+                (ticker,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "ts": row[0],
+            "price": row[1],
+            "vol_forecast_5d": row[2],
+            "downside_risk_5d": row[3],
+            "regime_score": row[4],
+            "expected_move_5d": row[5],
+        }
+
+    def upsert_option_outcome(
+        self,
+        *,
+        ticker: str,
+        expiry: str,
+        right: str,
+        strike: float,
+        label: str,
+        close_price: float | None,
+        labeled_ts: str,
+    ) -> None:
+        ticker = ticker.upper().strip()
+        right = right.upper().strip()
+        with self.connect() as con:
+            con.execute(
+                """
+                INSERT OR REPLACE INTO option_outcomes(ticker, expiry, right, strike, label, close_price, labeled_ts)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (ticker, expiry, right, float(strike), label, close_price, labeled_ts),
+            )
+
+    def price_bar_count(self, ticker: str) -> int:
+        ticker = ticker.upper().strip()
+        with self.connect() as con:
+            row = con.execute(
+                "SELECT COUNT(*) FROM price_bars_1m WHERE ticker=?",
+                (ticker,),
+            ).fetchone()
+        return row[0] if row else 0
+
     def upsert_price_bar_1m(
         self,
         *,
@@ -524,6 +627,7 @@ class DB:
         with self.connect() as con:
             option_features_count = con.execute("SELECT COUNT(*) FROM option_features").fetchone()[0]
             weekly_picks_count = con.execute("SELECT COUNT(*) FROM weekly_picks").fetchone()[0]
+            stock_ml_count = con.execute("SELECT COUNT(*) FROM stock_ml_signals").fetchone()[0]
 
             bars_table_exists = (
                 con.execute(
@@ -553,4 +657,5 @@ class DB:
             "price_bars_1m_rows": bars_count,
             "price_bars_series_len_max": series_len,
             "price_bars_series_len_top": bar_dist,
+            "stock_ml_rows": stock_ml_count,
         }

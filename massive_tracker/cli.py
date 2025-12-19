@@ -18,6 +18,7 @@ from .watchlist import Watchlists
 from .ingest import ingest_daily
 from .weekly_rollup import run_weekly_rollup
 from .picker import run_weekly_picker
+from .stock_ml import run_stock_ml
 from .oced import run_oced_scan
 from .promotion import promote_from_weekly_picks
 
@@ -77,6 +78,13 @@ def oced_status(db_path: str = "data/sqlite/tracker.db"):
 def ml_status(db_path: str = "data/sqlite/tracker.db"):
     db = DB(db_path)
     print(db.get_ml_status())
+
+
+@app.command()
+def stock_ml(db_path: str = "data/sqlite/tracker.db", lookback_days: int = 500):
+    """Compute stock-only ML signals (vol/regime/expected move) and store results."""
+    rows = run_stock_ml(db_path=db_path, lookback_days=lookback_days)
+    print(f"[green]Computed stock ML[/green] -> stock_ml_signals ({len(rows)} rows)")
 
 
 @app.command()

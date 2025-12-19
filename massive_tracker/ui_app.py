@@ -14,6 +14,7 @@ from .watchlist import Watchlists
 from .store import DB
 from .ws_client import MassiveWSClient, make_monitor_bar_handler
 from .config import CFG
+from .stock_ml import run_stock_ml
 
 
 DEFAULT_UNIVERSE = [
@@ -290,6 +291,15 @@ def main() -> None:
         if st.button("ML Status"):
             st.session_state.ml_status = _ml_status(db_path)
             st.session_state.last_status = "ML status refreshed"
+
+        if st.button("Run Stock ML (vol/regime)"):
+            try:
+                rows = run_stock_ml(db_path=db_path)
+                st.success(f"Computed {len(rows)} stock ML rows")
+                st.session_state.last_status = "Stock ML computed"
+            except Exception as e:
+                st.error(f"Stock ML failed: {e}")
+                st.session_state.last_status = f"Stock ML failed: {e}"
 
         if st.button("Run Daily Pipeline"):
             try:
