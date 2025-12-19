@@ -22,11 +22,25 @@ def _bucket_pack_cost(cost: float | None) -> str:
     return ">$10k"
 
 
+def _ml_ready(db: DB) -> bool:
+    models_dir = Path("data/models")
+    has_model = models_dir.exists() and any(models_dir.iterdir())
+    with db.connect() as con:
+        has_table = (
+            con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='ml_predictions'"
+            ).fetchone()
+            is not None
+        )
+    return bool(has_model or has_table)
+
+
 def generate_summary(db_path: str = "data/sqlite/tracker.db") -> None:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     db = DB(db_path)
 
     picks = db.fetch_latest_weekly_picks()
+    ml_ready = _ml_ready(db)
 
     with db.connect() as con:
         open_positions = con.execute(
@@ -43,6 +57,45 @@ def generate_summary(db_path: str = "data/sqlite/tracker.db") -> None:
     lines: list[str] = []
     lines.append("# OCED Daily Summary\n")
     lines.append(f"**Generated:** {ts}\n")
+
+    # Ranked highlights
+    picks_by_score = sorted(picks, key=lambda r: r.get("score", 0.0), reverse=True)
+    best_pick = picks_by_score[0] if picks_by_score else None
+
+    lines.append("## Best Pick (Overall)\n")
+    if best_pick:
+        ml_note = "(ML rank pending)" if not ml_ready else ""
+        lines.append(
+            f"- {best_pick['ticker']} | lane={best_pick.get('lane')} | score={best_pick.get('score'):.3f} | prem_yield={best_pick.get('prem_yield_weekly')} {ml_note}"
+        )
+    else:
+        lines.append("_No picks yet._")
+    lines.append("")
+
+    lines.append("## Safest Picks (SAFE lane)\n")
+    safest = [p for p in picks_by_score if p.get("lane") == "SAFE"]
+    safest = safest[:5]
+    if safest:
+        for r in safest:
+            lines.append(
+                f"- {r['ticker']} | score={r.get('score'):.3f} | prem_yield={r.get('prem_yield_weekly')} | price={r.get('price')}"
+            )
+    else:
+        lines.append("_No SAFE lane picks._")
+    lines.append("")
+
+    lines.append("## Premium Leaders (Yield)\n")
+    premium_leaders = [p for p in picks if p.get("prem_yield_weekly") is not None]
+    premium_leaders.sort(key=lambda r: r.get("prem_yield_weekly", 0.0), reverse=True)
+    premium_leaders = premium_leaders[:5]
+    if premium_leaders:
+        for r in premium_leaders:
+            lines.append(
+                f"- {r['ticker']} | yield={r.get('prem_yield_weekly')} | lane={r.get('lane')} | price={r.get('price')}"
+            )
+    else:
+        lines.append("_No premium estimates available._")
+    lines.append("")
 
     # Weekly universe picks
     lines.append("## Weekly Universe Picks\n")

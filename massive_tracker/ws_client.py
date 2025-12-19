@@ -156,6 +156,19 @@ class MassiveWSClient:
         except Exception as e:
             if self.on_error:
                 self.on_error(e)
+        try:
+            self.market_cache_db.upsert_price_bar_1m(
+                ts=ts_iso,
+                ticker=str(sym),
+                o=ev.get("o"),
+                h=ev.get("h"),
+                l=ev.get("l"),
+                c=ev.get("c"),
+                v=ev.get("v"),
+            )
+        except Exception as e:
+            if self.on_error:
+                self.on_error(e)
     
     def _authenticate(self):
         """Send authentication message."""

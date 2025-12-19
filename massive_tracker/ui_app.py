@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import List
+from datetime import datetime
 
 import streamlit as st
+
+from massive_tracker.config import CFG
 
 from .monitor import run_monitor
 from .picker import run_weekly_picker
@@ -12,6 +15,27 @@ from .summary import SUMMARY_PATH, generate_summary
 from .watchlist import Watchlists
 from .store import DB
 from .ws_client import MassiveWSClient, make_monitor_bar_handler
+from .config import CFG
+
+
+DEFAULT_UNIVERSE = [
+    # ETFs
+    "SPY", "QQQ", "DIA", "IWM", "XLF", "XLE", "XLK",
+    # Core tech / large
+    "AAPL", "MSFT", "GOOG", "AMZN", "META", "NVDA",
+    # Semi / chips
+    "TSM", "AVGO", "ASML", "TXN", "ARM", "MRVL",
+    # Financial / infra
+    "BAC", "WFC", "CSCO", "IBM", "PYPL",
+    # Platform / growth / fintech
+    "UBER", "SHOP", "SOFI", "HOOD", "AFRM", "PLTR",
+    # Crypto / miners / exchange
+    "COIN", "RIOT", "MARA",
+    # EV
+    "TSLA", "RIVN",
+    # Small/spec
+    "CLOV",
+]
 
 DEFAULT_DB_PATH = "data/sqlite/tracker.db"
 
@@ -62,6 +86,38 @@ def _load_watchlist(db_path: str) -> List[str]:
         return []
 
 
+def _latest_weekly_picks(db_path: str) -> list[dict]:
+    try:
+        return DB(db_path).fetch_latest_weekly_picks()
+    except Exception:
+        return []
+
+
+def _latest_contract_health(db_path: str) -> list[dict]:
+    try:
+        return DB(db_path).fetch_latest_option_features()
+    except Exception:
+        return []
+
+
+def _oced_status(db_path: str) -> dict:
+    try:
+        db = DB(db_path)
+        return {
+            "stats": db.get_oced_stats(),
+            "top": db.get_latest_oced_top(n=10),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _ml_status(db_path: str) -> dict:
+    try:
+        return DB(db_path).get_ml_status()
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def _start_stream(
     db_path: str,
     tickers_raw: str,
@@ -84,7 +140,8 @@ def _start_stream(
         return
 
     try:
-        client = MassiveWSClient(api_key=None, market_cache_db_path=db_path if cache_market_last else None)
+        client = MassiveWSClient(api_key=CFG.massive_api_key, market_cache_db_path=db_path if cache_market_last else None)
+        
         if monitor_triggers:
             handler = make_monitor_bar_handler(
                 db_path=db_path,
@@ -138,108 +195,218 @@ def _render_watchlist(watchlist: List[str]) -> None:
 
 def main() -> None:
     _apply_theme()
+    if "stream_client" not in st.session_state:
+        st.session_state.stream_client = None
+    if "stream_thread" not in st.session_state:
+        st.session_state.stream_thread = None
+    if "stream_running" not in st.session_state:
+        st.session_state.stream_running = False
+    if "stream_symbols" not in st.session_state:
+        st.session_state.stream_symbols = []
+    if "last_status" not in st.session_state:
+        st.session_state.last_status = "Ready"
+    if "oced_status" not in st.session_state:
+        st.session_state.oced_status = None
+    if "ml_status" not in st.session_state:
+        st.session_state.ml_status = None
 
     st.title("OCED Tracker — One Pager")
-    st.caption("Run the weekly workflow and real-time triggers without the CLI.")
+    st.caption("Operate the pipeline without the CLI: stream ➜ picks ➜ monitor ➜ summary.")
 
-    db_path = st.text_input("SQLite DB path", value=DEFAULT_DB_PATH)
-    watchlist = _load_watchlist(db_path)
-
-    _render_watchlist(watchlist)
-
-    st.markdown("---")
-    st.subheader("Live Stream & Triggers")
-
-    col_left, col_right = st.columns([2, 1])
-    with col_left:
-        tickers_raw = st.text_input("Tickers (comma separated) — leave blank to use watchlist", value=",")
+    # Sidebar layout
+    with st.sidebar:
+        st.header("Operations")
+        db_path = st.text_input("SQLite DB path", value=DEFAULT_DB_PATH)
+        tickers_raw = st.text_input("Tickers (comma-separated)", value="")
         monitor_triggers = st.checkbox("Trigger monitor on near-strike / rapid-up", value=True)
         near_strike_pct = st.slider("Near-strike pct", min_value=0.01, max_value=0.10, value=0.03, step=0.01)
         rapid_up_pct = st.slider("Rapid-up pct", min_value=0.01, max_value=0.10, value=0.05, step=0.01)
-        cooldown_sec = st.slider("Trigger cooldown (seconds)", min_value=60, max_value=900, value=300, step=30)
+        cooldown_sec = st.slider("Trigger cooldown (sec)", min_value=60, max_value=900, value=300, step=30)
         cache_market_last = st.checkbox("Cache bars to market_last", value=True)
 
-        start_col, stop_col = st.columns(2)
-        with start_col:
-            if st.button("Start Stream", use_container_width=True):
-                _start_stream(
-                    db_path,
-                    tickers_raw,
-                    monitor_triggers,
-                    near_strike_pct,
-                    rapid_up_pct,
-                    cooldown_sec,
-                    cache_market_last,
-                )
-        with stop_col:
-            if st.button("Stop Stream", use_container_width=True):
-                _stop_stream()
+        if st.button("Start Stream"):
+            _start_stream(
+                db_path,
+                tickers_raw,
+                monitor_triggers,
+                near_strike_pct,
+                rapid_up_pct,
+                cooldown_sec,
+                cache_market_last,
+            )
+            st.session_state.last_status = "Stream started"
+        if st.button("Stop Stream"):
+            _stop_stream()
+            st.session_state.last_status = "Stream stopped"
 
-    with col_right:
-        st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
-        st.markdown("**Status**")
-        st.write("Symbols:", st.session_state.get("stream_symbols", []))
-        st.write("Running:", st.session_state.get("stream_running", False))
-        st.write("Watchlist:", watchlist if watchlist else "(empty)")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.subheader("Weekly Workflow")
-
-    picks_col, promote_col, monitor_col = st.columns(3)
-
-    with picks_col:
-        st.markdown("**Build Weekly Picks**")
-        top_n = st.slider("Top N", min_value=1, max_value=20, value=5)
-        if st.button("Build Weekly Picks", use_container_width=True):
+        if st.button("Build Weekly Picks"):
             try:
-                picks = run_weekly_picker(db_path=db_path, top_n=top_n)
-                st.success(f"Wrote {len(picks)} picks to weekly_picks.")
-                if picks:
-                    st.dataframe(picks, use_container_width=True)
+                picks = run_weekly_picker(db_path=db_path, top_n=10)
+                st.success(f"Wrote {len(picks)} picks")
+                st.session_state.last_status = "Weekly picks built"
             except Exception as e:
                 st.error(f"Picker failed: {e}")
+                st.session_state.last_status = f"Picker failed: {e}"
 
-    with promote_col:
-        st.markdown("**Promote to Weekly Watch**")
-        seed = st.number_input("Seed budget ($)", min_value=1000.0, max_value=50000.0, value=9300.0, step=500.0)
-        lane = st.selectbox("Lane", ["SAFE", "AGGRESSIVE", "ALL"])
-        if st.button("Promote", use_container_width=True):
-            try:
-                results = promote_from_weekly_picks(db_path=db_path, seed=seed, lane=lane)
-                promoted = [r for r in results if not r.skipped]
-                skipped = [r for r in results if r.skipped]
-                st.success(f"Promoted {len(promoted)} | Skipped {len(skipped)}")
-                if results:
-                    st.dataframe(
-                        [r.__dict__ for r in results],
-                        use_container_width=True,
-                    )
-            except Exception as e:
-                st.error(f"Promotion failed: {e}")
-
-    with monitor_col:
-        st.markdown("**Run Monitor**")
-        if st.button("Run Monitor", use_container_width=True):
+        if st.button("Run Monitor"):
             try:
                 run_monitor(db_path=db_path)
-                st.success("Monitor complete — option_features updated.")
+                st.success("Monitor complete")
+                st.session_state.last_status = "Monitor complete"
             except Exception as e:
                 st.error(f"Monitor failed: {e}")
+                st.session_state.last_status = f"Monitor failed: {e}"
+
+        if st.button("Generate Summary"):
+            try:
+                generate_summary(db_path=db_path)
+                st.success(f"Summary regenerated at {SUMMARY_PATH}")
+                st.session_state.last_status = "Summary generated"
+            except Exception as e:
+                st.error(f"Summary failed: {e}")
+                st.session_state.last_status = f"Summary failed: {e}"
+
+        if st.button("OCED Status"):
+            st.session_state.oced_status = _oced_status(db_path)
+            st.session_state.last_status = "OCED status refreshed"
+
+        if st.button("ML Status"):
+            st.session_state.ml_status = _ml_status(db_path)
+            st.session_state.last_status = "ML status refreshed"
+
+        if st.button("Run Daily Pipeline"):
+            try:
+                picks = run_weekly_picker(db_path=db_path, top_n=10)
+                run_monitor(db_path=db_path)
+                generate_summary(db_path=db_path)
+                st.success(f"Daily pipeline complete | picks={len(picks)}")
+                st.session_state.last_status = "Daily pipeline complete"
+            except Exception as e:
+                st.error(f"Daily pipeline failed: {e}")
+                st.session_state.last_status = f"Daily pipeline failed: {e}"
+
+        st.markdown("---")
+        st.header("Universe")
+        wl = Watchlists(DB(db_path))
+        current = wl.list_tickers()
+        st.caption(f"{len(current)} enabled")
+        st.dataframe(current, use_container_width=True, height=200)
+
+        new_raw = st.text_input("Add tickers (comma-separated)", value="")
+        if st.button("Add Tickers"):
+            for t in [x.strip().upper() for x in new_raw.split(",") if x.strip()]:
+                wl.add_ticker(t)
+            st.session_state.last_status = "Tickers added"
+            st.rerun()
+
+        remove_t = st.selectbox("Remove ticker", options=[""] + current)
+        if st.button("Remove Selected") and remove_t:
+            wl.remove_ticker(remove_t)
+            st.session_state.last_status = f"Removed {remove_t}"
+            st.rerun()
+
+        if st.button("Seed Universe"):
+            for t in DEFAULT_UNIVERSE:
+                wl.add_ticker(t)
+            st.session_state.last_status = "Universe seeded"
+            st.rerun()
+
+        st.markdown("---")
+        st.header("Active Contracts")
+        with st.form("add_contract_form"):
+            ct_ticker = st.text_input("Ticker", value="").upper().strip()
+            ct_expiry = st.date_input("Expiry")
+            ct_right = st.selectbox("Right", ["C", "P"], index=0)
+            ct_strike = st.number_input("Strike", min_value=0.0, step=0.5)
+            ct_qty = st.number_input("Qty", min_value=1, step=1, value=1)
+            ct_shares = st.number_input("Shares", min_value=0, step=10, value=100)
+            ct_basis = st.number_input("Stock basis", min_value=0.0, step=0.01, value=0.0)
+            ct_prem = st.number_input("Premium received", min_value=0.0, step=0.01, value=0.0)
+            submitted = st.form_submit_button("Add Contract")
+        if submitted and ct_ticker:
+            try:
+                wl.add_contract(
+                    ct_ticker,
+                    ct_expiry.strftime("%Y-%m-%d"),
+                    ct_right,
+                    float(ct_strike),
+                    int(ct_qty),
+                    shares=int(ct_shares),
+                    stock_basis=float(ct_basis),
+                    premium_open=float(ct_prem),
+                )
+                st.success("Contract added")
+                st.session_state.last_status = "Contract added"
+                st.rerun()
+            except Exception as e:
+                st.error(f"Add contract failed: {e}")
+
+        open_rows = wl.list_open_contracts()
+        st.caption("Open contracts")
+        if open_rows:
+            st.dataframe(open_rows, use_container_width=True, height=200)
+        close_id = st.number_input("Close contract id", min_value=0, step=1, value=0)
+        if st.button("Close Contract") and close_id:
+            try:
+                wl.close_contract(int(close_id))
+                st.session_state.last_status = f"Closed contract {int(close_id)}"
+                st.rerun()
+            except Exception as e:
+                st.error(f"Close failed: {e}")
+
+    # Main panel
+    watchlist = _load_watchlist(db_path)
+    _render_watchlist(watchlist)
 
     st.markdown("---")
-    st.subheader("Summary")
+    st.subheader("Picks & Health")
 
-    if st.button("Generate & View Summary", use_container_width=True):
-        try:
-            generate_summary(db_path=db_path)
-            content = SUMMARY_PATH.read_text(encoding="utf-8") if SUMMARY_PATH.exists() else "(summary not found)"
-            st.success(f"Summary regenerated at {SUMMARY_PATH}")
-            st.markdown(content)
-        except Exception as e:
-            st.error(f"Summary failed: {e}")
+    picks = _latest_weekly_picks(db_path)
+    health = _latest_contract_health(db_path)
 
-    st.markdown("<small class='pill'>Flow: stream ➜ picks ➜ promote ➜ monitor ➜ summary</small>", unsafe_allow_html=True)
+    col_main, col_side = st.columns([3, 2])
+    with col_main:
+        st.markdown("**Latest Weekly Picks**")
+        if picks:
+            st.dataframe(picks, use_container_width=True, height=300)
+        else:
+            st.info("No weekly picks yet.")
+
+        st.markdown("**Contract Health (option_features)**")
+        if health:
+            st.dataframe(health, use_container_width=True, height=300)
+        else:
+            st.info("No contract health snapshots yet.")
+
+    with col_side:
+        st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
+        st.markdown("**Last status**")
+        st.write(st.session_state.last_status)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        if st.session_state.oced_status:
+            st.markdown("**OCED Status**")
+            st.json(st.session_state.oced_status)
+        if st.session_state.ml_status:
+            st.markdown("**ML Status**")
+            st.json(st.session_state.ml_status)
+
+        if health:
+            alerts = [h for h in health if h.get("recommendation")]
+            st.markdown("**Alerts / Recommendations**")
+            if alerts:
+                st.dataframe(alerts, use_container_width=True, height=200)
+            else:
+                st.caption("No recommendations flagged yet.")
+
+    st.markdown("---")
+    st.subheader("Summary Preview")
+    if SUMMARY_PATH.exists():
+        st.markdown(SUMMARY_PATH.read_text(encoding="utf-8"))
+    else:
+        st.info("Generate summary to view content.")
+
+    st.markdown("<small class='pill'>Flow: stream ➜ picks ➜ monitor ➜ summary</small>", unsafe_allow_html=True)
 
 
 if __name__ == "__main__":

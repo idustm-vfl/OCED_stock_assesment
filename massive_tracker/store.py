@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS oced_scores (
   last_close REAL,
   ann_vol REAL,
   sharpe_like REAL,
+    max_drawdown REAL,
   S_ETH REAL,
   CR REAL,
   ICS REAL,
@@ -118,6 +119,24 @@ CREATE TABLE IF NOT EXISTS option_features (
     snapshot_status TEXT,
     PRIMARY KEY (ts, ticker, expiry, right, strike)
 );
+
+CREATE TABLE IF NOT EXISTS price_bars_1m (
+    ts TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    o REAL, h REAL, l REAL, c REAL,
+    v REAL,
+    PRIMARY KEY (ts, ticker)
+);
+
+CREATE TABLE IF NOT EXISTS universe_candidates (
+    ts TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    reason TEXT,
+    source TEXT,
+    score REAL,
+    approved INTEGER DEFAULT 0,
+    PRIMARY KEY (ts, ticker)
+);
 """
 
 @dataclass
@@ -134,6 +153,7 @@ class DB:
 
     def _apply_migrations(self, con: sqlite3.Connection) -> None:
         self._ensure_option_position_columns(con)
+        self._ensure_oced_columns(con)
 
     def _ensure_option_position_columns(self, con: sqlite3.Connection) -> None:
         rows = con.execute("PRAGMA table_info(option_positions)").fetchall()
@@ -147,6 +167,13 @@ class DB:
 
         if "premium_open" not in existing_cols:
             con.execute("ALTER TABLE option_positions ADD COLUMN premium_open REAL NOT NULL DEFAULT 0.0")
+
+    def _ensure_oced_columns(self, con: sqlite3.Connection) -> None:
+        rows = con.execute("PRAGMA table_info(oced_scores)").fetchall()
+        existing_cols = {row[1] for row in rows}
+
+        if "max_drawdown" not in existing_cols:
+            con.execute("ALTER TABLE oced_scores ADD COLUMN max_drawdown REAL")
 
     def set_market_last(self, ticker: str, ts: str, price: float) -> None:
         ticker = ticker.upper().strip()
@@ -409,7 +436,8 @@ class DB:
     def get_latest_oced_row(self, ticker: str) -> dict | None:
         ticker = ticker.upper().strip()
         cols = (
-            "ts, lane, premium_heur_100, premium_ml_100, premium_yield_heur, premium_yield_ml, fft_entropy, fractal_roughness"
+            "ts, lane, ann_vol, max_drawdown, sharpe_like, CoveredCall_Suitability, "
+            "premium_heur_100, premium_ml_100, premium_yield_heur, premium_yield_ml, fft_entropy, fractal_roughness"
         )
         with self.connect() as con:
             row = con.execute(
@@ -421,10 +449,108 @@ class DB:
         return {
             "ts": row[0],
             "lane": row[1],
-            "premium_heur_100": row[2],
-            "premium_ml_100": row[3],
-            "premium_yield_heur": row[4],
-            "premium_yield_ml": row[5],
-            "fft_entropy": row[6],
-            "fractal_roughness": row[7],
+            "ann_vol": row[2],
+            "max_drawdown": row[3],
+            "sharpe_like": row[4],
+            "covered_call_suitability": row[5],
+            "premium_heur_100": row[6],
+            "premium_ml_100": row[7],
+            "premium_yield_heur": row[8],
+            "premium_yield_ml": row[9],
+            "fft_entropy": row[10],
+            "fractal_roughness": row[11],
+        }
+
+    def upsert_price_bar_1m(
+        self,
+        *,
+        ts: str,
+        ticker: str,
+        o: float | None,
+        h: float | None,
+        l: float | None,
+        c: float | None,
+        v: float | None,
+    ) -> None:
+        ticker = ticker.upper().strip()
+        with self.connect() as con:
+            con.execute(
+                "INSERT OR REPLACE INTO price_bars_1m(ts, ticker, o, h, l, c, v) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (ts, ticker, o, h, l, c, v),
+            )
+
+    def get_oced_stats(self) -> dict:
+        with self.connect() as con:
+            rows = con.execute("SELECT COUNT(*), MAX(ts), COUNT(DISTINCT ticker) FROM oced_scores").fetchone()
+        return {
+            "rows": rows[0] if rows else 0,
+            "latest_ts": rows[1] if rows else None,
+            "unique_tickers": rows[2] if rows else 0,
+        }
+
+    def get_latest_oced_top(self, n: int = 10) -> list[dict]:
+        with self.connect() as con:
+            latest_ts_row = con.execute("SELECT MAX(ts) FROM oced_scores").fetchone()
+            if not latest_ts_row or latest_ts_row[0] is None:
+                return []
+            latest_ts = latest_ts_row[0]
+            rows = con.execute(
+                """
+                SELECT ticker, CoveredCall_Suitability, sharpe_like, max_drawdown, ann_vol, premium_yield_heur, premium_yield_ml
+                FROM oced_scores
+                WHERE ts = ?
+                ORDER BY CoveredCall_Suitability DESC, sharpe_like DESC, max_drawdown ASC
+                LIMIT ?
+                """,
+                (latest_ts, n),
+            ).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            out.append(
+                {
+                    "ticker": r[0],
+                    "CoveredCall_Suitability": r[1],
+                    "SharpeLike": r[2],
+                    "MaxDrawdown": r[3],
+                    "AnnVol": r[4],
+                    "premium_yield_heur": r[5],
+                    "premium_yield_ml": r[6],
+                    "ts": latest_ts,
+                }
+            )
+        return out
+
+    def get_ml_status(self) -> dict:
+        with self.connect() as con:
+            option_features_count = con.execute("SELECT COUNT(*) FROM option_features").fetchone()[0]
+            weekly_picks_count = con.execute("SELECT COUNT(*) FROM weekly_picks").fetchone()[0]
+
+            bars_table_exists = (
+                con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='price_bars_1m'"
+                ).fetchone()
+                is not None
+            )
+            bars_count = 0
+            bar_dist: list[tuple[str, int]] = []
+            if bars_table_exists:
+                bars_count = con.execute("SELECT COUNT(*) FROM price_bars_1m").fetchone()[0]
+
+            series_len = None
+            if bars_table_exists and bars_count > 0:
+                top_row = con.execute(
+                    "SELECT ticker, COUNT(*) as cnt FROM price_bars_1m GROUP BY ticker ORDER BY cnt DESC LIMIT 1"
+                ).fetchone()
+                if top_row:
+                    series_len = top_row[1]
+                bar_dist = con.execute(
+                    "SELECT ticker, COUNT(*) as cnt FROM price_bars_1m GROUP BY ticker ORDER BY cnt DESC LIMIT 10"
+                ).fetchall()
+
+        return {
+            "option_features_rows": option_features_count,
+            "weekly_picks_rows": weekly_picks_count,
+            "price_bars_1m_rows": bars_count,
+            "price_bars_series_len_max": series_len,
+            "price_bars_series_len_top": bar_dist,
         }

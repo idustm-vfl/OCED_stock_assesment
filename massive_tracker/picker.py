@@ -8,7 +8,13 @@ from .watchlist import Watchlists
 from .signals import compute_signal_features
 
 
-LANE_SAFE = {"SAFE", "SAFE_HIGH", "AGGRESSIVE"}
+LANE_SAFE = {"SAFE", "SAFE_HIGH", "SAFE_HIGH_PAYOUT", "AGGRESSIVE"}
+
+SAFE_CC_THRESHOLD = 0.59
+SAFE_VOL_THRESHOLD = 0.20
+SAFE_MDD_THRESHOLD = 0.20
+SAFE_HIGH_CC_THRESHOLD = 0.58
+SAFE_HIGH_VOL_THRESHOLD = 0.35
 
 
 def _utc_now() -> str:
@@ -20,6 +26,43 @@ def _safe_div(n: float | None, d: float | None) -> float | None:
         return float(n) / float(d) if n is not None and d not in (None, 0) else None
     except Exception:
         return None
+
+
+def _lane_from_metrics(oced_row: dict | None) -> str:
+    if not oced_row:
+        return "AGGRESSIVE"
+
+    cc = oced_row.get("covered_call_suitability")
+    ann_vol = oced_row.get("ann_vol")
+    max_dd = oced_row.get("max_drawdown")
+
+    try:
+        cc_val = float(cc) if cc is not None else None
+    except Exception:
+        cc_val = None
+    try:
+        ann_vol_val = float(ann_vol) if ann_vol is not None else None
+    except Exception:
+        ann_vol_val = None
+    try:
+        max_dd_val = float(max_dd) if max_dd is not None else None
+    except Exception:
+        max_dd_val = None
+
+    if (
+        cc_val is not None
+        and ann_vol_val is not None
+        and max_dd_val is not None
+        and cc_val >= SAFE_CC_THRESHOLD
+        and ann_vol_val <= SAFE_VOL_THRESHOLD
+        and max_dd_val <= SAFE_MDD_THRESHOLD
+    ):
+        return "SAFE"
+
+    if cc_val is not None and ann_vol_val is not None and cc_val >= SAFE_HIGH_CC_THRESHOLD and ann_vol_val <= SAFE_HIGH_VOL_THRESHOLD:
+        return "SAFE_HIGH_PAYOUT"
+
+    return "AGGRESSIVE"
 
 
 def _compute_premium_est(price: float | None, oced_row: dict | None) -> tuple[float | None, float | None]:
@@ -38,10 +81,10 @@ def _compute_premium_est(price: float | None, oced_row: dict | None) -> tuple[fl
 
 
 def _resolve_lane(oced_row: dict | None) -> str:
-    lane = (oced_row or {}).get("lane") or "SAFE"
+    lane = _lane_from_metrics(oced_row)
     lane = lane.upper()
     if lane not in LANE_SAFE:
-        return "SAFE"
+        return "AGGRESSIVE"
     return lane
 
 
@@ -55,6 +98,33 @@ def _resolve_fractal_status(signal: dict, oced_row: dict | None) -> str:
     if oced_row and oced_row.get("fractal_roughness") is not None:
         return "ok"
     return str(signal.get("fractal", {}).get("status"))
+
+
+def _final_rank_score(prem_yield: float | None, oced_row: dict | None) -> float:
+    try:
+        yield_score = float(prem_yield) if prem_yield is not None else 0.0
+    except Exception:
+        yield_score = 0.0
+
+    cc_suit = 0.0
+    ann_vol = 0.0
+    max_dd = 0.0
+    if oced_row:
+        try:
+            cc_suit = float(oced_row.get("covered_call_suitability") or 0.0)
+        except Exception:
+            cc_suit = 0.0
+        try:
+            ann_vol = float(oced_row.get("ann_vol") or 0.0)
+        except Exception:
+            ann_vol = 0.0
+        try:
+            max_dd = float(oced_row.get("max_drawdown") or 0.0)
+        except Exception:
+            max_dd = 0.0
+
+    risk_penalty = ann_vol + max_dd
+    return (2.0 * yield_score) + cc_suit - (0.75 * risk_penalty)
 
 
 def run_weekly_picker(
@@ -81,8 +151,10 @@ def run_weekly_picker(
         signal = compute_signal_features([price] if price is not None else [])
 
         prem_est, prem_yield = _compute_premium_est(price, oced_row)
+        if prem_yield is None and price:
+            prem_yield = _safe_div(1.0, price)  # simple proxy if premium unknown
         lane = _resolve_lane(oced_row)
-        score = prem_yield if prem_yield is not None else (100.0 / price if price else 0.0)
+        final_score = _final_rank_score(prem_yield, oced_row)
         pack_cost = price * 100.0 if price is not None else None
 
         pick = {
@@ -90,7 +162,7 @@ def run_weekly_picker(
             "ticker": ticker.upper(),
             "lane": lane,
             "rank": None,
-            "score": float(score) if score is not None else 0.0,
+            "score": float(final_score),
             "price": price,
             "pack_100_cost": pack_cost,
             "est_weekly_prem_100": prem_est,

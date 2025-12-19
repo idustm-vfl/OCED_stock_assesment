@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from datetime import datetime, timezone
 
 # Ensure local module imports work when running: python cli.py ...
 ROOT = Path(__file__).resolve().parent
@@ -57,6 +58,56 @@ def add_ticker(ticker: str, db_path: str = "data/sqlite/tracker.db"):
     wl = Watchlists(DB(db_path))
     wl.add_ticker(ticker)
     print(f"[green]Added ticker[/green] {ticker.upper()}")
+
+
+@app.command()
+def oced_status(db_path: str = "data/sqlite/tracker.db"):
+    """
+    Show OCED coverage: row count, latest ts, top tickers by CoveredCall_Suitability.
+    """
+    db = DB(db_path)
+    stats = db.get_oced_stats()
+    top = db.get_latest_oced_top(n=10)
+    print(stats)
+    for r in top:
+        print(r)
+
+
+@app.command()
+def ml_status(db_path: str = "data/sqlite/tracker.db"):
+    db = DB(db_path)
+    print(db.get_ml_status())
+
+
+@app.command()
+def seed_universe(db_path: str = "data/sqlite/tracker.db"):
+    """
+    Seed the watchlist with the last-known universe set (from prior OCED tables).
+    Safe to run multiple times (upsert behavior).
+    """
+    universe = [
+        # ETFs
+        "SPY", "QQQ", "DIA", "IWM", "XLF", "XLE", "XLK",
+        # Core tech / large
+        "AAPL", "MSFT", "GOOG", "AMZN", "META", "NVDA",
+        # Semi / chips
+        "TSM", "AVGO", "ASML", "TXN", "ARM", "MRVL",
+        # Financial / infra
+        "BAC", "WFC", "CSCO", "IBM", "PYPL",
+        # Platform / growth / fintech
+        "UBER", "SHOP", "SOFI", "HOOD", "AFRM", "PLTR",
+        # Crypto / miners / exchange
+        "COIN", "RIOT", "MARA",
+        # EV
+        "TSLA", "RIVN",
+        # Small/spec
+        "CLOV",
+    ]
+
+    wl = Watchlists(DB(db_path))
+    for t in universe:
+        wl.add_ticker(t)
+    print(f"[green]Seeded universe[/green] {len(universe)} tickers -> tickers table")
 
 
 @app.command()
@@ -224,6 +275,89 @@ def stream(
     except KeyboardInterrupt:
         print("\n[green]Stopped streaming[/green]")
         client.close()
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@app.command()
+def propose_universe_candidates(
+    db_path: str = "data/sqlite/tracker.db",
+    source_file: str = "data/config/universe.json",
+    reason: str = "curated_universe",
+    source: str = "curated",
+):
+    """
+    Propose new universe tickers from curated data (JSON list) or fallback to OCED constants.
+    Stores into universe_candidates for later approval.
+    """
+    import json
+    from .oced import TICKERS as OCED_TICKERS
+
+    db = DB(db_path)
+    wl = Watchlists(db)
+
+    candidates: list[str] = []
+    path = Path(source_file)
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+            if isinstance(data, list):
+                candidates = [str(t).upper().strip() for t in data if str(t).strip()]
+        except Exception:
+            candidates = []
+    if not candidates:
+        candidates = [t.upper() for t in OCED_TICKERS]
+
+    existing = set(wl.list_tickers())
+    ts = _utc_now()
+    new_items = [t for t in candidates if t and t not in existing]
+
+    with db.connect() as con:
+        for t in new_items:
+            con.execute(
+                "INSERT OR REPLACE INTO universe_candidates(ts, ticker, reason, source, score, approved) VALUES(?, ?, ?, ?, ?, 0)",
+                (ts, t, reason, source, None),
+            )
+    print(f"[green]Queued[/green] {len(new_items)} candidates from {source}")
+
+
+@app.command()
+def approve_universe_candidates(
+    db_path: str = "data/sqlite/tracker.db",
+    tickers: str = "",
+):
+    """
+    Approve stored universe candidates and add to tickers table.
+    If tickers param empty, approve all pending.
+    """
+    db = DB(db_path)
+    wl = Watchlists(db)
+
+    selected: list[str] = []
+    with db.connect() as con:
+        if tickers:
+            selected = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+            if selected:
+                rows = con.execute(
+                    "SELECT ticker FROM universe_candidates WHERE approved=0 AND ticker IN (%s)" % ",".join("?" * len(selected)),
+                    selected,
+                ).fetchall()
+                selected = [r[0] for r in rows]
+        else:
+            rows = con.execute(
+                "SELECT ticker FROM universe_candidates WHERE approved=0"
+            ).fetchall()
+            selected = [r[0] for r in rows]
+
+        for t in selected:
+            wl.add_ticker(t)
+            con.execute(
+                "UPDATE universe_candidates SET approved=1 WHERE ticker=?",
+                (t,),
+            )
+    print(f"[green]Approved[/green] {len(selected)} candidates -> tickers table")
 
 
 @app.command()

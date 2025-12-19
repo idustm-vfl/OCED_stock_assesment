@@ -1,25 +1,5 @@
 {
-  "name": "massive-tracker",
-  "image": "mcr.microsoft.com/devcontainers/python:3.11",
-  "features": {
-    "ghcr.io/devcontainers/features/common-utils:2": {},
-    "ghcr.io/devcontainers/features/git:1": {}
-  },
-  "postCreateCommand": "python -m pip install --upgrade pip && pip install -r requirements.txt",
-  "remoteEnv": {
-    "PYTHONUNBUFFERED": "1",
-    "PYTHONDONTWRITEBYTECODE": "1"
-  },
-  "customizations": {
-    "vscode": {
-      "settings": {
-        "python.defaultInterpreterPath": "/usr/local/bin/python",
-        "python.analysis.typeCheckingMode": "basic"
-      },
-      "extensions": [
-        "ms-python.python",
-        "ms-python.vscode-pylance"
-      ]
-    }
-  }
+  "name": "OCED Stock Assessment",
+  "postCreateCommand": "python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt",
+  "postStartCommand": "bash -lc 'cd /workspaces/OCED_stock_assesment && [ -f .venv/bin/activate ] && source .venv/bin/activate || true; pgrep -f \"streamlit run massive_tracker/ui_app.py\" >/dev/null 2>&1 || (nohup streamlit run massive_tracker/ui_app.py --server.port 8501 --server.address 0.0.0.0 >/tmp/streamlit.log 2>&1 &); echo VENV_READY'"
 }
