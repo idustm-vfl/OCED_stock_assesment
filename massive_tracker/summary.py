@@ -46,9 +46,11 @@ def _fmt(val) -> str:
 
 
 def _table(headers: list[str], rows: list[list[str]]) -> list[str]:
+    """Render a markdown table, coercing None/values to strings to avoid join errors."""
     out = ["| " + " | ".join(headers) + " |", "|" + "|".join([" --- "] * len(headers)) + "|"]
     for r in rows:
-        out.append("| " + " | ".join(r) + " |")
+        safe_row = ["" if val is None else str(val) for val in r]
+        out.append("| " + " | ".join(safe_row) + " |")
     return out
 
 

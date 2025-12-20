@@ -75,8 +75,8 @@ def test_universe_synced(ensure_init: None) -> None:
 
 def test_prices_available(ensure_init: None) -> None:
     db = DB(str(DB_PATH))
-    prices = db.get_latest_prices(get_universe(), allow_yfinance=True)
-    non_null = [p for p in prices.values() if p and p.get("price")]
+    prices = db.get_latest_prices(get_universe())
+    non_null = [p for p in prices if p and p.get("price")]
     assert non_null, "No prices returned from DB or yfinance fallback"
 
 
