@@ -6,17 +6,17 @@ from datetime import datetime
 
 import streamlit as st
 
-from .monitor import run_monitor
-from .picker import run_weekly_picker
-from .promotion import promote_from_weekly_picks
-from .summary import SUMMARY_PATH, write_summary
-from .watchlist import Watchlists
-from .store import DB
-from .ws_client import MassiveWSClient, make_monitor_bar_handler
-from .config import CFG
-from .stock_ml import run_stock_ml
-from .universe import sync_universe
-from .compare_models import run_compare
+from massive_tracker.monitor import run_monitor
+from massive_tracker.picker import run_weekly_picker
+from massive_tracker.promotion import promote_from_weekly_picks
+from massive_tracker.summary import SUMMARY_PATH, write_summary
+from massive_tracker.watchlist import Watchlists
+from massive_tracker.store import DB
+from massive_tracker.ws_client import MassiveWSClient, make_monitor_bar_handler
+from massive_tracker.config import CFG
+from massive_tracker.stock_ml import run_stock_ml
+from massive_tracker.universe import sync_universe
+from massive_tracker.compare_models import run_compare
 
 
 DEFAULT_UNIVERSE = [
