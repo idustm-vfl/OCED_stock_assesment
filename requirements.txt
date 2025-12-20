@@ -11,3 +11,4 @@ websocket-client
 yfinance
 scikit-learn
 streamlit
+Pytest 
