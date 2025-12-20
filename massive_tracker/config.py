@@ -44,7 +44,7 @@ def load_runtime_config() -> RuntimeConfig:
         massive_api_key=key.strip(),
         ws_feed=os.getenv("MASSIVE_WS_FEED", "delayed").strip() or "delayed",
         ws_market=os.getenv("MASSIVE_WS_MARKET", "options").strip() or "options",
-        rest_base=os.getenv("MASSIVE_REST_BASE", "").strip() or None,
+        rest_base=os.getenv("MASSIVE_REST_BASE", "https://api.massive.com").strip() or "https://api.massive.com",
         premium_history_csv=os.getenv("VFL_PREMIUM_HISTORY_CSV", "vfl_option_premium_history.csv"),
     )
 

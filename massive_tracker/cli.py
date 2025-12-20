@@ -22,6 +22,10 @@ from .stock_ml import run_stock_ml
 from .oced import run_oced_scan
 from .promotion import promote_from_weekly_picks
 from .flatfiles import download_range, load_option_file
+from .massive_rest import MassiveREST
+from .universe import sync_universe, get_universe
+from .summary import write_summary
+from .compare_models import run_compare
 
 from .wizard import run_wizard
 from .run import run_once
@@ -44,6 +48,12 @@ def _cfg():
 def init(db_path: str = "data/sqlite/tracker.db"):
     """Initialize local DB and folders."""
     DB(db_path).connect().close()
+    try:
+        db = DB(db_path)
+        synced = sync_universe(db)
+        print(f"[green]Universe synced[/green] rows={synced}")
+    except Exception as e:
+        print(f"[yellow]Universe sync skipped[/yellow]: {e}")
     print("[green]Initialized[/green] " + db_path)
 
 
@@ -213,6 +223,69 @@ def flatfile_backfill(
 
 
 @app.command()
+def refresh_contracts(
+    underlying: str = "",
+    expiration_date: str = "",
+    contract_type: str = "call",
+    expired: bool = False,
+    limit: int = 1000,
+    sort: str = "ticker",
+    order: str = "asc",
+    db_path: str = "data/sqlite/tracker.db",
+):
+    """Fetch options contracts from Massive REST and cache into sqlite."""
+
+    cfg = _cfg()
+    client = MassiveREST(base=cfg.rest_base, api_key=cfg.massive_api_key)
+
+    params = {
+        "underlying_ticker": underlying or None,
+        "expiration_date": expiration_date or None,
+        "contract_type": contract_type or None,
+        "expired": expired,
+        "limit": limit,
+        "sort": sort,
+        "order": order,
+    }
+
+    rows = client.get_options_contracts(**params)
+    db = DB(db_path)
+    cached = db.upsert_options_contracts(rows)
+    print(
+        f"[green]Contracts cached[/green] fetched={len(rows)} stored={cached} "
+        f"underlying={underlying or 'ALL'} expiration={expiration_date or 'ANY'}"
+    )
+
+
+@app.command()
+def compare(
+    db_path: str = "data/sqlite/tracker.db",
+    seed: float = 9300.0,
+    top_n: int = 10,
+):
+    """Run side-by-side model compare and save report."""
+    out = run_compare(db_path=db_path, seed=seed, top_n=top_n)
+    print(f"[green]Compare done[/green] -> data/reports/model_compare.json changes={len(out.get('decision_changes', []))}")
+
+
+@app.command()
+def daily(
+    db_path: str = "data/sqlite/tracker.db",
+    seed: float = 9300.0,
+    lane: str = "SAFE_HIGH",
+    top_n: int = 3,
+):
+    """One-shot daily flow: sync universe -> picker -> promote -> monitor -> summary."""
+    db = DB(db_path)
+    sync_universe(db)
+    picks = run_weekly_picker(db_path=db_path, top_n=10)
+    promote_from_weekly_picks(db_path=db_path, seed=seed, lane=lane, top_n=top_n)
+    run_monitor(db_path=db_path)
+    write_summary(db_path=db_path, seed=seed)
+    print(f"[green]Done[/green] -> data/reports/summary.md | picks={len(picks)}")
+
+
+@app.command()
 def rollup():
     """Generate CSV reports from JSONL logs."""
     run_weekly_rollup()
@@ -220,8 +293,16 @@ def rollup():
 
 
 @app.command()
+def summary(db_path: str = "data/sqlite/tracker.db", seed: float = 9300.0):
+    """Generate markdown summary (DB-first)."""
+    md = write_summary(db_path=db_path, seed=seed)
+    print(f"[green]Summary written[/green] -> data/reports/summary.md ({len(md.splitlines())} lines)")
+
+
+@app.command()
 def picker(db_path: str = "data/sqlite/tracker.db", top_n: int = 5):
     """Emit weekly picks into weekly_picks table."""
+    sync_universe(DB(db_path))
     picks = run_weekly_picker(db_path=db_path, top_n=top_n)
     print(f"[green]Wrote picks[/green] to weekly_picks ({len(picks)} rows)")
 
@@ -240,25 +321,20 @@ def oced(
 def promote(
     db_path: str = "data/sqlite/tracker.db",
     seed: float = 9300.0,
-    lane: str = "SAFE",
+    lane: str = "SAFE_HIGH",
+    top_n: int = 3,
 ):
-    """Promote latest weekly_picks into option_positions by budget and lane."""
-    results = promote_from_weekly_picks(db_path=db_path, seed=seed, lane=lane)
+    """Promote latest weekly_picks into option_positions with gates."""
+    results = promote_from_weekly_picks(db_path=db_path, seed=seed, lane=lane, top_n=top_n)
     promoted = [r for r in results if not r.skipped]
     skipped = [r for r in results if r.skipped]
 
     for r in promoted:
-        print(
-            f"[green]Promoted[/green] {r.ticker} {r.expiry} C{r.strike} x{r.qty}"
-        )
+        print(f"[green]Promoted[/green] {r.ticker} {r.expiry} C{r.strike} x{r.qty} (pack={r.pack_cost})")
     for r in skipped:
-        print(
-            f"[yellow]Skipped[/yellow] {r.ticker} (reason={r.reason})"
-        )
+        print(f"[yellow]Skipped[/yellow] {r.ticker} (decision={r.decision} reason={r.reason})")
 
-    print(
-        f"[bold]Summary:[/bold] promoted={len(promoted)} skipped={len(skipped)}"
-    )
+    print(f"[bold]Summary:[/bold] promoted={len(promoted)} skipped={len(skipped)}")
 
 
 @app.command()

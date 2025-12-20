@@ -145,6 +145,39 @@ CREATE TABLE IF NOT EXISTS option_outcomes (
     PRIMARY KEY (ticker, expiry, right, strike)
 );
 
+CREATE TABLE IF NOT EXISTS promotions (
+    ts TEXT,
+    ticker TEXT,
+    expiry TEXT,
+    strike REAL,
+    lane TEXT,
+    seed REAL,
+    decision TEXT,
+    reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS universe (
+    ticker TEXT PRIMARY KEY,
+    category TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    added_ts TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS options_contracts (
+    ticker TEXT PRIMARY KEY,
+    underlying_ticker TEXT NOT NULL,
+    contract_type TEXT NOT NULL,
+    exercise_style TEXT,
+    expiration_date TEXT NOT NULL,
+    strike_price REAL NOT NULL,
+    shares_per_contract REAL,
+    primary_exchange TEXT,
+    cfi TEXT,
+    as_of TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_options_contracts_underlying_exp
+    ON options_contracts(underlying_ticker, expiration_date);
+
 CREATE TABLE IF NOT EXISTS option_bars_1m (
     ts TEXT NOT NULL,
     contract TEXT NOT NULL,
@@ -213,6 +246,8 @@ class DB:
         self._ensure_oced_columns(con)
         self._ensure_weekly_pick_columns(con)
         self._ensure_option_bar_tables(con)
+        self._ensure_universe_table(con)
+        self._ensure_promotions_table(con)
 
     def _ensure_option_position_columns(self, con: sqlite3.Connection) -> None:
         rows = con.execute("PRAGMA table_info(option_positions)").fetchall()
@@ -245,6 +280,12 @@ class DB:
             con.execute("ALTER TABLE weekly_picks ADD COLUMN recommended_strike REAL")
         if "recommended_premium_100" not in existing_cols:
             con.execute("ALTER TABLE weekly_picks ADD COLUMN recommended_premium_100 REAL")
+        if "category" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN category TEXT")
+        if "bars_1m_count" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN bars_1m_count INTEGER")
+        if "price_source" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN price_source TEXT")
 
     def _ensure_option_bar_tables(self, con: sqlite3.Connection) -> None:
         con.execute(
@@ -263,6 +304,34 @@ class DB:
                 v INTEGER,
                 transactions INTEGER,
                 PRIMARY KEY (ts, contract)
+            )
+            """
+        )
+
+    def _ensure_universe_table(self, con: sqlite3.Connection) -> None:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS universe (
+              ticker TEXT PRIMARY KEY,
+              category TEXT,
+              enabled INTEGER NOT NULL DEFAULT 1,
+              added_ts TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
+
+    def _ensure_promotions_table(self, con: sqlite3.Connection) -> None:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS promotions (
+              ts TEXT,
+              ticker TEXT,
+              expiry TEXT,
+              strike REAL,
+              lane TEXT,
+              seed REAL,
+              decision TEXT,
+              reason TEXT
             )
             """
         )
@@ -389,6 +458,7 @@ class DB:
         *,
         ts: str,
         ticker: str,
+        category: str | None,
         lane: str | None,
         rank: int | None,
         score: float | None,
@@ -404,18 +474,21 @@ class DB:
         recommended_expiry: str | None,
         recommended_strike: float | None,
         recommended_premium_100: float | None,
+        bars_1m_count: int | None,
+        price_source: str | None,
     ) -> None:
         ticker = ticker.upper().strip()
         with self.connect() as con:
             con.execute(
                 """
                 INSERT OR REPLACE INTO weekly_picks
-                (ts, ticker, lane, rank, score, price, pack_100_cost, est_weekly_prem_100, prem_yield_weekly, safest_flag, fft_status, fractal_status, source, final_rank_score, recommended_expiry, recommended_strike, recommended_premium_100)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (ts, ticker, category, lane, rank, score, price, pack_100_cost, est_weekly_prem_100, prem_yield_weekly, safest_flag, fft_status, fractal_status, source, final_rank_score, recommended_expiry, recommended_strike, recommended_premium_100, bars_1m_count, price_source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ts,
                     ticker,
+                    category,
                     lane,
                     rank,
                     score,
@@ -431,6 +504,8 @@ class DB:
                     recommended_expiry,
                     recommended_strike,
                     recommended_premium_100,
+                    bars_1m_count,
+                    price_source,
                 ),
             )
 
@@ -444,7 +519,7 @@ class DB:
                 """
                   SELECT ts, ticker, lane, rank, score, price, pack_100_cost, est_weekly_prem_100,
                       prem_yield_weekly, safest_flag, fft_status, fractal_status, source, final_rank_score,
-                      recommended_expiry, recommended_strike, recommended_premium_100
+                      recommended_expiry, recommended_strike, recommended_premium_100, category, bars_1m_count, price_source
                 FROM weekly_picks
                 WHERE ts = ?
                 ORDER BY rank ASC
@@ -473,6 +548,9 @@ class DB:
                     "recommended_expiry": r[14],
                     "recommended_strike": r[15],
                     "recommended_premium_100": r[16],
+                    "category": r[17],
+                    "bars_1m_count": r[18],
+                    "price_source": r[19],
                 }
             )
         return out
@@ -625,6 +703,75 @@ class DB:
             "expected_move_5d": row[5],
         }
 
+    def log_promotion(self, *, ts: str, ticker: str, expiry: str, strike: float, lane: str, seed: float, decision: str, reason: str) -> None:
+        with self.connect() as con:
+            con.execute(
+                """
+                INSERT INTO promotions(ts, ticker, expiry, strike, lane, seed, decision, reason)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (ts, ticker.upper().strip(), expiry, float(strike), lane, seed, decision, reason),
+            )
+
+    def list_promotions(self, limit: int = 100) -> list[dict]:
+        with self.connect() as con:
+            rows = con.execute(
+                "SELECT ts, ticker, expiry, strike, lane, seed, decision, reason FROM promotions ORDER BY ts DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "ts": r[0],
+                "ticker": r[1],
+                "expiry": r[2],
+                "strike": r[3],
+                "lane": r[4],
+                "seed": r[5],
+                "decision": r[6],
+                "reason": r[7],
+            }
+            for r in rows
+        ]
+
+    def get_latest_prices(self, tickers: list[str]) -> list[dict]:
+        out: list[dict] = []
+        if not tickers:
+            return out
+        up = [t.upper().strip() for t in tickers if t]
+        placeholders = ",".join(["?"] * len(up))
+        with self.connect() as con:
+            rows = con.execute(
+                f"SELECT ticker, price, ts FROM market_last WHERE ticker IN ({placeholders})",
+                up,
+            ).fetchall()
+        prices = {r[0].upper(): (r[1], r[2]) for r in rows}
+
+        missing = [t for t in up if t not in prices]
+        yf_prices: dict[str, tuple[float, str]] = {}
+        if missing:
+            try:
+                import yfinance as yf  # type: ignore
+
+                for t in missing:
+                    data = yf.Ticker(t).history(period="1d")
+                    if not data.empty:
+                        close = float(data["Close"].iloc[-1])
+                        ts_val = data.index[-1].isoformat()
+                        yf_prices[t] = (close, ts_val)
+            except Exception:
+                pass
+
+        for t in up:
+            if t in prices:
+                price, ts_val = prices[t]
+                out.append({"ticker": t, "price": price, "ts": ts_val, "source": "market_last"})
+            elif t in yf_prices:
+                price, ts_val = yf_prices[t]
+                out.append({"ticker": t, "price": price, "ts": ts_val, "source": "yfinance"})
+            else:
+                out.append({"ticker": t, "price": None, "ts": None, "source": "missing"})
+        return out
+
     def upsert_option_outcome(
         self,
         *,
@@ -646,6 +793,141 @@ class DB:
                 """,
                 (ticker, expiry, right, float(strike), label, close_price, labeled_ts),
             )
+
+    def upsert_universe(self, rows: list[tuple[str, str | None]]) -> int:
+        if not rows:
+            return 0
+        clean: list[tuple[str, str | None]] = []
+        seen = set()
+        for ticker, category in rows:
+            t = (ticker or "").upper().strip()
+            if not t or t in seen:
+                continue
+            seen.add(t)
+            clean.append((t, category))
+        if not clean:
+            return 0
+        with self.connect() as con:
+            con.executemany(
+                """
+                INSERT OR REPLACE INTO universe(ticker, category, enabled)
+                VALUES(?, ?, COALESCE((SELECT enabled FROM universe u WHERE u.ticker = ?), 1))
+                """,
+                [(t, c, t) for t, c in clean],
+            )
+        return len(clean)
+
+    def list_universe(self, enabled_only: bool = True) -> list[tuple[str, str | None]]:
+        sql = "SELECT ticker, category, enabled FROM universe"
+        if enabled_only:
+            sql += " WHERE enabled=1"
+        sql += " ORDER BY ticker ASC"
+        with self.connect() as con:
+            rows = con.execute(sql).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def upsert_options_contracts(self, rows: list[dict] | list[tuple], as_of: str | None = None) -> int:
+        if not rows:
+            return 0
+
+        payload: list[tuple] = []
+        for r in rows:
+            if isinstance(r, dict):
+                ticker = (r.get("ticker") or "").strip()
+                underlying = (r.get("underlying_ticker") or "").upper().strip()
+                contract_type = (r.get("contract_type") or "").lower().strip()
+                exercise_style = (r.get("exercise_style") or None)
+                expiration_date = (r.get("expiration_date") or "").strip()
+                strike_price = r.get("strike_price")
+                shares_per_contract = r.get("shares_per_contract")
+                primary_exchange = r.get("primary_exchange")
+                cfi = r.get("cfi")
+                as_of_val = r.get("as_of") or as_of
+            else:
+                (
+                    ticker,
+                    underlying,
+                    contract_type,
+                    exercise_style,
+                    expiration_date,
+                    strike_price,
+                    shares_per_contract,
+                    primary_exchange,
+                    cfi,
+                    as_of_val,
+                ) = r
+                ticker = (ticker or "").strip()
+                underlying = (underlying or "").upper().strip()
+                contract_type = (contract_type or "").lower().strip()
+                expiration_date = (expiration_date or "").strip()
+                as_of_val = as_of_val or as_of
+
+            if not ticker or not underlying or not contract_type or not expiration_date or strike_price is None:
+                continue
+
+            payload.append(
+                (
+                    ticker,
+                    underlying,
+                    contract_type,
+                    exercise_style,
+                    expiration_date,
+                    float(strike_price),
+                    float(shares_per_contract) if shares_per_contract is not None else None,
+                    primary_exchange,
+                    cfi,
+                    as_of_val,
+                )
+            )
+
+        if not payload:
+            return 0
+
+        with self.connect() as con:
+            con.executemany(
+                """
+                INSERT OR REPLACE INTO options_contracts
+                (ticker, underlying_ticker, contract_type, exercise_style, expiration_date, strike_price, shares_per_contract, primary_exchange, cfi, as_of)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                payload,
+            )
+        return len(payload)
+
+    def get_contracts_for(self, underlying: str, expiry: str, contract_type: str | None = "call") -> list[dict]:
+        underlying = underlying.upper().strip()
+        contract_filter = (contract_type or "").lower().strip() or None
+
+        sql = """
+            SELECT ticker, underlying_ticker, contract_type, exercise_style, expiration_date,
+                   strike_price, shares_per_contract, primary_exchange, cfi, as_of
+            FROM options_contracts
+            WHERE underlying_ticker=? AND expiration_date=?
+        """
+        params: list = [underlying, expiry]
+        if contract_filter:
+            sql += " AND contract_type=?"
+            params.append(contract_filter)
+        sql += " ORDER BY strike_price ASC"
+
+        with self.connect() as con:
+            rows = con.execute(sql, params).fetchall()
+
+        return [
+            {
+                "ticker": r[0],
+                "underlying_ticker": r[1],
+                "contract_type": r[2],
+                "exercise_style": r[3],
+                "expiration_date": r[4],
+                "strike_price": r[5],
+                "shares_per_contract": r[6],
+                "primary_exchange": r[7],
+                "cfi": r[8],
+                "as_of": r[9],
+            }
+            for r in rows
+        ]
 
     def price_bar_count(self, ticker: str) -> int:
         ticker = ticker.upper().strip()

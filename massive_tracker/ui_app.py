@@ -9,12 +9,14 @@ import streamlit as st
 from .monitor import run_monitor
 from .picker import run_weekly_picker
 from .promotion import promote_from_weekly_picks
-from .summary import SUMMARY_PATH, generate_summary
+from .summary import SUMMARY_PATH, write_summary
 from .watchlist import Watchlists
 from .store import DB
 from .ws_client import MassiveWSClient, make_monitor_bar_handler
 from .config import CFG
 from .stock_ml import run_stock_ml
+from .universe import sync_universe
+from .compare_models import run_compare
 
 
 DEFAULT_UNIVERSE = [
@@ -213,6 +215,7 @@ def _render_watchlist(watchlist: List[str]) -> None:
 
 def main() -> None:
     _apply_theme()
+    sync_universe(DB(DEFAULT_DB_PATH))
     if "stream_client" not in st.session_state:
         st.session_state.stream_client = None
     if "stream_thread" not in st.session_state:
@@ -227,6 +230,8 @@ def main() -> None:
         st.session_state.oced_status = None
     if "ml_status" not in st.session_state:
         st.session_state.ml_status = None
+    if "promotions" not in st.session_state:
+        st.session_state.promotions = []
 
     st.title("OCED Tracker — One Pager")
     st.caption("Operate the pipeline without the CLI: stream ➜ picks ➜ monitor ➜ summary.")
@@ -241,6 +246,13 @@ def main() -> None:
         rapid_up_pct = st.slider("Rapid-up pct", min_value=0.01, max_value=0.10, value=0.05, step=0.01)
         cooldown_sec = st.slider("Trigger cooldown (sec)", min_value=60, max_value=900, value=300, step=30)
         cache_market_last = st.checkbox("Cache bars to market_last", value=True)
+
+        if st.button("Sync Universe"):
+            try:
+                synced = sync_universe(DB(db_path))
+                st.success(f"Universe synced ({synced} rows)")
+            except Exception as e:
+                st.error(f"Sync failed: {e}")
 
         if st.button("Start Stream"):
             _start_stream(
@@ -277,7 +289,7 @@ def main() -> None:
 
         if st.button("Generate Summary"):
             try:
-                generate_summary(db_path=db_path)
+                write_summary(db_path=db_path)
                 st.success(f"Summary regenerated at {SUMMARY_PATH}")
                 st.session_state.last_status = "Summary generated"
             except Exception as e:
@@ -305,16 +317,19 @@ def main() -> None:
             try:
                 picks = run_weekly_picker(db_path=db_path, top_n=10)
                 run_monitor(db_path=db_path)
-                generate_summary(db_path=db_path)
+                write_summary(db_path=db_path)
                 st.success(f"Daily pipeline complete | picks={len(picks)}")
                 st.session_state.last_status = "Daily pipeline complete"
             except Exception as e:
                 st.error(f"Daily pipeline failed: {e}")
                 st.session_state.last_status = f"Daily pipeline failed: {e}"
 
+        lane_choice = st.selectbox("Promotion lane", ["SAFE", "SAFE_HIGH", "AGGRESSIVE", "ALL"], index=1)
+        seed_val = st.number_input("Seed ($)", min_value=1000.0, max_value=100000.0, value=9300.0, step=500.0)
+        topn_val = st.number_input("Promote top N", min_value=1, max_value=20, value=3, step=1)
         if st.button("Approve Weekly Picks → Active Contracts"):
             try:
-                results = promote_from_weekly_picks(db_path=db_path)
+                results = promote_from_weekly_picks(db_path=db_path, seed=seed_val, lane=lane_choice, top_n=int(topn_val))
                 promoted = [r for r in results if not r.skipped]
                 st.success(f"Promoted {len(promoted)} picks")
                 st.session_state.last_status = "Picks promoted"
@@ -325,17 +340,32 @@ def main() -> None:
         if st.button("Refresh Prices (WebSocket Snapshot)"):
             st.info("Prices update via live stream; start stream to refresh caches.")
 
+        if st.button("Run Compare"):
+            try:
+                out = run_compare(db_path=db_path, seed=seed_val, top_n=int(topn_val))
+                st.success(f"Compare done; changes={len(out.get('decision_changes', []))}")
+            except Exception as e:
+                st.error(f"Compare failed: {e}")
+
+        if st.button("Load Promotions Log"):
+            try:
+                st.session_state.promotions = DB(db_path).list_promotions(limit=100)
+            except Exception as e:
+                st.error(f"Load promotions failed: {e}")
+
         st.markdown("---")
         st.header("Universe")
         wl = Watchlists(DB(db_path))
         current = wl.list_tickers()
         st.caption(f"{len(current)} enabled")
-        st.dataframe(current, use_container_width=True, height=200)
 
         new_raw = st.text_input("Add tickers (comma-separated)", value="")
+        new_cat = st.text_input("Category (optional)", value="")
         if st.button("Add Tickers"):
             for t in [x.strip().upper() for x in new_raw.split(",") if x.strip()]:
                 wl.add_ticker(t)
+                if new_cat:
+                    DB(db_path).upsert_universe([(t, new_cat)])
             st.session_state.last_status = "Tickers added"
             st.rerun()
 
@@ -343,12 +373,6 @@ def main() -> None:
         if st.button("Remove Selected") and remove_t:
             wl.remove_ticker(remove_t)
             st.session_state.last_status = f"Removed {remove_t}"
-            st.rerun()
-
-        if st.button("Seed Universe"):
-            for t in DEFAULT_UNIVERSE:
-                wl.add_ticker(t)
-            st.session_state.last_status = "Universe seeded"
             st.rerun()
 
         st.markdown("---")
@@ -403,6 +427,10 @@ def main() -> None:
 
     picks = _latest_weekly_picks(db_path)
     health = _latest_contract_health(db_path)
+    db = DB(db_path)
+    universe_rows = db.list_universe(enabled_only=True)
+    prices = db.get_latest_prices([t for t, _ in universe_rows])
+    price_map = {p["ticker"]: p for p in prices}
 
     col_main, col_side = st.columns([3, 2])
     with col_main:
@@ -427,6 +455,13 @@ def main() -> None:
         else:
             st.info("No contract health snapshots yet.")
 
+        st.markdown("**Promotions Log (latest 100)**")
+        promos = st.session_state.get("promotions", [])
+        if promos:
+            st.dataframe(promos, use_container_width=True, height=240)
+        else:
+            st.caption("Load promotions log from sidebar.")
+
     with col_side:
         st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
         st.markdown("**Last status**")
@@ -447,6 +482,24 @@ def main() -> None:
                 st.dataframe(alerts, use_container_width=True, height=200)
             else:
                 st.caption("No recommendations flagged yet.")
+
+    st.markdown("---")
+    st.subheader("Universe Prices")
+    if universe_rows:
+        uni_rows = []
+        for t, cat in universe_rows:
+            entry = price_map.get(t)
+            uni_rows.append(
+                {
+                    "ticker": t,
+                    "category": cat,
+                    "price": entry.get("price") if entry else None,
+                    "source": entry.get("source") if entry else None,
+                }
+            )
+        st.dataframe(uni_rows, use_container_width=True, height=240)
+    else:
+        st.info("Universe empty; sync to populate.")
 
     st.markdown("---")
     st.subheader("Summary Preview")

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from math import sqrt
 
@@ -10,6 +10,7 @@ from .stock_ml import run_stock_ml, select_strike
 from .watchlist import Watchlists
 from .signals import compute_signal_features
 from .flatfiles import build_strike_candidates
+from .universe import get_universe, get_category, sync_universe
 
 
 LANE_SAFE = {"SAFE", "SAFE_HIGH", "SAFE_HIGH_PAYOUT", "AGGRESSIVE"}
@@ -24,6 +25,52 @@ SAFE_HIGH_VOL_THRESHOLD = 0.35
 def _next_friday(base: datetime) -> str:
     days_ahead = (4 - base.weekday()) % 7
     return (base + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+
+
+def _pick_expiry_from_contracts(db: DB, ticker: str, fallback: str) -> str:
+    ticker = ticker.upper().strip()
+    with db.connect() as con:
+        row = con.execute(
+            """
+            SELECT expiration_date
+            FROM options_contracts
+            WHERE underlying_ticker=? AND expiration_date>=?
+            ORDER BY expiration_date ASC
+            LIMIT 1
+            """,
+            (ticker, fallback),
+        ).fetchone()
+
+        if not row or not row[0]:
+            row = con.execute(
+                """
+                SELECT expiration_date
+                FROM options_contracts
+                WHERE underlying_ticker=?
+                ORDER BY expiration_date ASC
+                LIMIT 1
+                """,
+                (ticker,),
+            ).fetchone()
+
+    return row[0] if row and row[0] else fallback
+
+
+def _lane_from_ann_vol(ann_vol: float | None, category: str | None) -> str:
+    if ann_vol is not None:
+        if ann_vol <= 0.25:
+            return "SAFE"
+        if ann_vol <= 0.45:
+            return "SAFE_HIGH"
+        return "AGGRESSIVE"
+
+    if category == "ETF":
+        return "SAFE"
+    if category in {"BANK", "FINTECH", "INFRA"}:
+        return "SAFE_HIGH"
+    if category in {"CRYPTO", "SPEC"}:
+        return "AGGRESSIVE"
+    return "SAFE_HIGH"
 
 
 def _signal_status_from_bars(count: int) -> str:
@@ -80,6 +127,9 @@ def _lane_from_metrics(oced_row: dict | None) -> str:
 
     if cc_val is not None and ann_vol_val is not None and cc_val >= SAFE_HIGH_CC_THRESHOLD and ann_vol_val <= SAFE_HIGH_VOL_THRESHOLD:
         return "SAFE_HIGH_PAYOUT"
+
+    if ann_vol_val is not None:
+        return _lane_from_ann_vol(ann_vol_val, None)
 
     return "AGGRESSIVE"
 
@@ -210,6 +260,37 @@ def _pick_strike_candidate(
     return best
 
 
+def _merge_contracts_with_bars(contracts: list[dict], bar_candidates: list[dict]) -> list[dict]:
+    if contracts:
+        bar_by_strike = {
+            float(c.get("strike")): c for c in bar_candidates if c.get("strike") is not None
+        }
+        merged: list[dict] = []
+        for c in contracts:
+            strike_price = c.get("strike_price")
+            if strike_price is None:
+                continue
+            strike_val = float(strike_price)
+            bar = bar_by_strike.get(strike_val)
+            merged.append(
+                {
+                    "strike": strike_val,
+                    "contract": c.get("ticker"),
+                    "close": bar.get("close") if bar else None,
+                    "volume": bar.get("volume") if bar else None,
+                    "trades": bar.get("trades") if bar else None,
+                    "spread_proxy": bar.get("spread_proxy") if bar else None,
+                    "volume_intensity": bar.get("volume_intensity") if bar else None,
+                    "trade_intensity": bar.get("trade_intensity") if bar else None,
+                    "realized_vol": bar.get("realized_vol") if bar else None,
+                    "stability": bar.get("stability") if bar else None,
+                    "strike_quality_score": bar.get("strike_quality_score") if bar else 0.0,
+                }
+            )
+        return merged
+    return bar_candidates
+
+
 def run_weekly_picker(
     db_path: str = "data/sqlite/tracker.db",
     *,
@@ -225,8 +306,13 @@ def run_weekly_picker(
     """
 
     db = DB(db_path)
-    wl = Watchlists(db)
-    tickers = wl.list_tickers()
+    sync_universe(db)
+    universe_rows = db.list_universe(enabled_only=True)
+    tickers = [t for t, _ in universe_rows] or get_universe()
+    if not tickers:
+        wl = Watchlists(db)
+        tickers = wl.list_tickers()
+    categories = {t: c for t, c in universe_rows}
     ts = _utc_now()
 
     ml_latest: dict[str, dict] = {}
@@ -237,10 +323,13 @@ def run_weekly_picker(
         except Exception:
             ml_latest = {}
 
-    expiry = _next_friday(datetime.utcnow())
+    default_expiry = _next_friday(datetime.utcnow())
     picks: list[dict] = []
     for ticker in tickers:
-        price, _ = db.get_market_last(ticker)
+        expiry = _pick_expiry_from_contracts(db, ticker, default_expiry)
+        price_row = next((r for r in db.get_latest_prices([ticker]) if r["ticker"] == ticker.upper()), {"price": None, "source": "missing"})
+        price = price_row.get("price")
+        price_source = price_row.get("source")
         oced_row = db.get_latest_oced_row(ticker)
         ml_row = ml_latest.get(ticker.upper()) or db.get_latest_stock_ml(ticker)
         bar_count = db.price_bar_count(ticker)
@@ -251,6 +340,8 @@ def run_weekly_picker(
         if prem_yield is None and price:
             prem_yield = _safe_div(1.0, price)  # simple proxy if premium unknown
         lane = _resolve_lane(oced_row)
+        if lane == "AGGRESSIVE":
+            lane = _lane_from_ann_vol(oced_row.get("ann_vol") if oced_row else None, categories.get(ticker))
         base_score = _final_rank_score(prem_yield, oced_row)
         final_score = base_score + _ml_rank_adjust(
             regime_score=ml_row.get("regime_score") if ml_row else None,
@@ -261,7 +352,28 @@ def run_weekly_picker(
         exp_move = _expected_move(price, ml_row, oced_row)
         target_strike = select_strike(price, exp_move, lane=lane)
         latest_day = db.latest_option_bar_date("option_bars_1d", ticker)
-        strike_candidates = build_strike_candidates(ticker, expiry, latest_day or (datetime.utcnow().strftime("%Y-%m-%d"))) if price else []
+        contracts = db.get_contracts_for(ticker, expiry, contract_type="call")
+        strike_candidates_bars = build_strike_candidates(
+            ticker,
+            expiry,
+            latest_day or (datetime.utcnow().strftime("%Y-%m-%d")),
+        ) if price else []
+
+        if contracts and price is not None:
+            lane_bounds: Dict[str, Tuple[float, float]] = {
+                "SAFE": (0.03, 0.06),
+                "SAFE_HIGH": (0.02, 0.10),
+                "SAFE_HIGH_PAYOUT": (0.02, 0.10),
+                "AGGRESSIVE": (0.01, 0.15),
+            }
+            lo, hi = lane_bounds.get(lane, (0.03, 0.06))
+            target_pct = (lo + hi) / 2.0
+            target_strike = price * (1 + target_pct)
+            strikes_avail = [float(c.get("strike_price")) for c in contracts if c.get("strike_price") is not None]
+            if strikes_avail:
+                target_strike = min(strikes_avail, key=lambda s: abs(s - target_strike))
+
+        strike_candidates = _merge_contracts_with_bars(contracts, strike_candidates_bars)
         picked = _pick_strike_candidate(candidates=strike_candidates, target_strike=target_strike, spot=price)
         if picked:
             final_score += picked.get("edge_score", 0.0) or 0.0
@@ -278,6 +390,7 @@ def run_weekly_picker(
         pick = {
             "ts": ts,
             "ticker": ticker.upper(),
+            "category": categories.get(ticker),
             "lane": lane,
             "rank": None,
             "score": float(base_score),
@@ -293,6 +406,8 @@ def run_weekly_picker(
             "recommended_expiry": expiry,
             "recommended_strike": picked.get("strike") if picked else None,
             "recommended_premium_100": picked.get("premium_100") if picked else prem_est,
+            "bars_1m_count": bar_count,
+            "price_source": price_source,
         }
         picks.append(pick)
 
