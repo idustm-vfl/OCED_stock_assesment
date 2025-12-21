@@ -3,8 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 from datetime import datetime
+import sys
 
 import streamlit as st
+
+# Ensure project root is importable when launched via `streamlit run massive_tracker/ui_app.py`
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from massive_tracker.monitor import run_monitor
 from massive_tracker.picker import run_weekly_picker
