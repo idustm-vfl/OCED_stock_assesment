@@ -34,3 +34,7 @@ class MassiveREST:
             safety += 1
 
         return results
+
+    def get_option_chain_snapshot(self, *, underlying: str, expiry: str) -> dict:
+        params = {"underlying": underlying.upper().strip(), "expiration": expiry}
+        return self._get("/v3/options/chain/snapshot", params=params)

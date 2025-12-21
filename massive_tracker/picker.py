@@ -9,7 +9,7 @@ from .store import DB
 from .stock_ml import run_stock_ml, select_strike
 from .watchlist import Watchlists
 from .signals import compute_signal_features
-from .flatfiles import build_strike_candidates
+from .options_chain import get_option_chain
 from .universe import get_universe, get_category, sync_universe
 
 
@@ -20,6 +20,14 @@ SAFE_VOL_THRESHOLD = 0.20
 SAFE_MDD_THRESHOLD = 0.20
 SAFE_HIGH_CC_THRESHOLD = 0.58
 SAFE_HIGH_VOL_THRESHOLD = 0.35
+LANE_MIN_YIELD = {
+    "SAFE": 0.006,           # 0.6% weekly
+    "SAFE_HIGH": 0.008,      # 0.8% weekly
+    "SAFE_HIGH_PAYOUT": 0.010,  # 1.0% weekly
+    "AGGRESSIVE": 0.012,     # 1.2% weekly
+}
+MAX_SPREAD_PCT = 0.12
+DELTA_BAND = (0.05, 0.45)  # Only enforced if delta present
 
 
 def _next_friday(base: datetime) -> str:
@@ -134,20 +142,6 @@ def _lane_from_metrics(oced_row: dict | None) -> str:
     return "AGGRESSIVE"
 
 
-def _compute_premium_est(price: float | None, oced_row: dict | None) -> tuple[float | None, float | None]:
-    prem = None
-    if oced_row:
-        prem = oced_row.get("premium_ml_100") or oced_row.get("premium_heur_100")
-
-    if prem is None and price is not None and price > 0:
-        prem = price * 0.01 * 100  # 1% weekly proxy
-
-    if prem is None:
-        return None, None
-
-    prem_yield = _safe_div(prem, (price * 100.0) if price is not None else None)
-    return float(prem), prem_yield if prem_yield is not None else None
-
 
 def _resolve_lane(oced_row: dict | None) -> str:
     lane = _lane_from_metrics(oced_row)
@@ -230,65 +224,79 @@ def _expected_move(price: float | None, ml_row: dict | None, oced_row: dict | No
     return None
 
 
-def _pick_strike_candidate(
+def _select_chain_option(
     *,
-    candidates: List[dict],
+    ticker: str,
+    price: float | None,
+    lane: str,
+    expiry: str,
     target_strike: float | None,
-    spot: float | None,
-) -> dict | None:
-    if not candidates:
-        return None
-    best = None
-    best_score = float("-inf")
-    for c in candidates:
-        strike = float(c.get("strike")) if c.get("strike") is not None else None
-        if strike is None:
+) -> tuple[dict | None, str]:
+    quotes = get_option_chain(ticker, expiry)
+    if not quotes:
+        return None, "missing_option_chain"
+
+    min_yield = LANE_MIN_YIELD.get(lane, 0.0)
+    candidates: list[dict] = []
+    for q in quotes:
+        strike = q.get("strike")
+        mid = q.get("mid")
+        bid = q.get("bid")
+        ask = q.get("ask")
+        delta = q.get("delta")
+        if price is None or strike is None or mid is None:
             continue
-        premium = c.get("close")
-        premium_100 = float(premium) * 100.0 if premium is not None else None
-        yield_proxy = (premium_100 / (spot * 100.0)) if premium_100 and spot else 0.0
-        distance = abs(strike - (target_strike or strike)) / max(spot or strike or 1.0, 1e-6)
-        upside = max(0.0, strike - (spot or 0.0)) / max(spot or 1.0, 1e-6)
-        edge = (c.get("strike_quality_score") or 0.0) - distance + yield_proxy + upside
-        if edge > best_score:
-            best_score = edge
-            best = {
-                **c,
-                "premium_100": premium_100,
-                "edge_score": edge,
-            }
-    return best
+        try:
+            strike_f = float(strike)
+            mid_f = float(mid)
+        except Exception:
+            continue
+        if mid_f <= 0:
+            continue
+        # Require OTM or at-the-money; covered-call policy.
+        if strike_f < price:
+            continue
 
-
-def _merge_contracts_with_bars(contracts: list[dict], bar_candidates: list[dict]) -> list[dict]:
-    if contracts:
-        bar_by_strike = {
-            float(c.get("strike")): c for c in bar_candidates if c.get("strike") is not None
-        }
-        merged: list[dict] = []
-        for c in contracts:
-            strike_price = c.get("strike_price")
-            if strike_price is None:
+        spread_pct = None
+        if bid is not None and ask is not None:
+            try:
+                spread_pct = (float(ask) - float(bid)) / max(((float(ask) + float(bid)) / 2.0), 1e-6)
+            except Exception:
+                spread_pct = None
+            if spread_pct is not None and spread_pct > MAX_SPREAD_PCT:
                 continue
-            strike_val = float(strike_price)
-            bar = bar_by_strike.get(strike_val)
-            merged.append(
-                {
-                    "strike": strike_val,
-                    "contract": c.get("ticker"),
-                    "close": bar.get("close") if bar else None,
-                    "volume": bar.get("volume") if bar else None,
-                    "trades": bar.get("trades") if bar else None,
-                    "spread_proxy": bar.get("spread_proxy") if bar else None,
-                    "volume_intensity": bar.get("volume_intensity") if bar else None,
-                    "trade_intensity": bar.get("trade_intensity") if bar else None,
-                    "realized_vol": bar.get("realized_vol") if bar else None,
-                    "stability": bar.get("stability") if bar else None,
-                    "strike_quality_score": bar.get("strike_quality_score") if bar else 0.0,
-                }
-            )
-        return merged
-    return bar_candidates
+
+        if delta is not None:
+            try:
+                d = float(delta)
+                if d < DELTA_BAND[0] or d > DELTA_BAND[1]:
+                    continue
+            except Exception:
+                pass
+
+        prem_100 = mid_f * 100.0
+        prem_yield = _safe_div(prem_100, price * 100.0 if price is not None else None)
+        if prem_yield is None or prem_yield < min_yield:
+            continue
+
+        score = prem_yield - (abs(strike_f - (target_strike or price)) / max(price, 1e-6))
+        candidates.append(
+            {
+                "strike": strike_f,
+                "mid": mid_f,
+                "prem_100": prem_100,
+                "prem_yield": prem_yield,
+                "spread_pct": spread_pct,
+                "delta": delta,
+                "score": score,
+            }
+        )
+
+    if not candidates:
+        return None, "no_chain_match"
+
+    best = max(candidates, key=lambda c: c.get("score", 0.0))
+    return best, "ok"
 
 
 def run_weekly_picker(
@@ -336,49 +344,35 @@ def run_weekly_picker(
         signal = compute_signal_features([price] if price is not None else [])
         hist_status = _signal_status_from_bars(bar_count)
 
-        prem_est, prem_yield = _compute_premium_est(price, oced_row)
-        if prem_yield is None and price:
-            prem_yield = _safe_div(1.0, price)  # simple proxy if premium unknown
+        prem_est = None
+        prem_yield = None
         lane = _resolve_lane(oced_row)
         if lane == "AGGRESSIVE":
             lane = _lane_from_ann_vol(oced_row.get("ann_vol") if oced_row else None, categories.get(ticker))
+        pack_cost = price * 100.0 if price is not None else None
+
+        exp_move = _expected_move(price, ml_row, oced_row)
+        target_strike = select_strike(price, exp_move, lane=lane)
+        picked, premium_status = _select_chain_option(
+            ticker=ticker,
+            price=price,
+            lane=lane,
+            expiry=expiry,
+            target_strike=target_strike,
+        )
+        if picked:
+            prem_est = picked.get("prem_100")
+            prem_yield = picked.get("prem_yield")
+            target_strike = picked.get("strike")
+            premium_status = "ok"
+        else:
+            premium_status = premium_status or "missing_option_chain"
+
         base_score = _final_rank_score(prem_yield, oced_row)
         final_score = base_score + _ml_rank_adjust(
             regime_score=ml_row.get("regime_score") if ml_row else None,
             downside_risk_5d=ml_row.get("downside_risk_5d") if ml_row else None,
         )
-        pack_cost = price * 100.0 if price is not None else None
-
-        exp_move = _expected_move(price, ml_row, oced_row)
-        target_strike = select_strike(price, exp_move, lane=lane)
-        latest_day = db.latest_option_bar_date("option_bars_1d", ticker)
-        contracts = db.get_contracts_for(ticker, expiry, contract_type="call")
-        strike_candidates_bars = build_strike_candidates(
-            ticker,
-            expiry,
-            latest_day or (datetime.utcnow().strftime("%Y-%m-%d")),
-        ) if price else []
-
-        if contracts and price is not None:
-            lane_bounds: Dict[str, Tuple[float, float]] = {
-                "SAFE": (0.03, 0.06),
-                "SAFE_HIGH": (0.02, 0.10),
-                "SAFE_HIGH_PAYOUT": (0.02, 0.10),
-                "AGGRESSIVE": (0.01, 0.15),
-            }
-            lo, hi = lane_bounds.get(lane, (0.03, 0.06))
-            target_pct = (lo + hi) / 2.0
-            target_strike = price * (1 + target_pct)
-            strikes_avail = [float(c.get("strike_price")) for c in contracts if c.get("strike_price") is not None]
-            if strikes_avail:
-                target_strike = min(strikes_avail, key=lambda s: abs(s - target_strike))
-
-        strike_candidates = _merge_contracts_with_bars(contracts, strike_candidates_bars)
-        picked = _pick_strike_candidate(candidates=strike_candidates, target_strike=target_strike, spot=price)
-        if picked:
-            final_score += picked.get("edge_score", 0.0) or 0.0
-            prem_est = picked.get("premium_100") or prem_est
-            prem_yield = _safe_div(prem_est, (price * 100.0) if price is not None else None) if prem_est is not None else prem_yield
 
         if hist_status == "weekly_stable":
             fft_status = _resolve_fft_status(signal, oced_row)
@@ -405,9 +399,10 @@ def run_weekly_picker(
             "final_rank_score": float(final_score),
             "recommended_expiry": expiry,
             "recommended_strike": picked.get("strike") if picked else None,
-            "recommended_premium_100": picked.get("premium_100") if picked else prem_est,
+            "recommended_premium_100": prem_est if picked else None,
             "bars_1m_count": bar_count,
             "price_source": price_source,
+            "premium_status": premium_status,
         }
         picks.append(pick)
 

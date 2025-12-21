@@ -210,6 +210,19 @@ CREATE TABLE IF NOT EXISTS option_bars_1d (
     PRIMARY KEY (ts, contract)
 );
 
+CREATE TABLE IF NOT EXISTS option_chains (
+    ticker TEXT NOT NULL,
+    expiry TEXT NOT NULL,
+    strike REAL NOT NULL,
+    bid REAL,
+    ask REAL,
+    mid REAL,
+    oi REAL,
+    iv REAL,
+    ts TEXT NOT NULL,
+    PRIMARY KEY (ticker, expiry, strike)
+);
+
 CREATE TABLE IF NOT EXISTS price_bars_1m (
     ts TEXT NOT NULL,
     ticker TEXT NOT NULL,
@@ -748,7 +761,8 @@ class DB:
 
         missing = [t for t in up if t not in prices]
         yf_prices: dict[str, tuple[float, str]] = {}
-        if missing:
+        allow_yf = os.getenv("VFL_ALLOW_YFINANCE_FALLBACK", "0").lower() in {"1", "true", "yes"}
+        if missing and allow_yf:
             try:
                 import yfinance as yf  # type: ignore
 
@@ -770,6 +784,64 @@ class DB:
                 out.append({"ticker": t, "price": price, "ts": ts_val, "source": "yfinance"})
             else:
                 out.append({"ticker": t, "price": None, "ts": None, "source": "missing"})
+        return out
+
+    def upsert_option_chain_rows(self, *, ticker: str, expiry: str, rows: list[dict], ts: str) -> None:
+        """Cache option chain quotes for a ticker/expiry."""
+        if not rows:
+            return
+        ticker = ticker.upper().strip()
+        expiry = expiry.strip()
+        clean_rows = []
+        for r in rows:
+            try:
+                strike = float(r.get("strike"))
+            except Exception:
+                continue
+            bid = r.get("bid")
+            ask = r.get("ask")
+            mid = r.get("mid")
+            oi = r.get("oi")
+            iv = r.get("iv")
+            clean_rows.append((ticker, expiry, strike, bid, ask, mid, oi, iv, ts))
+        if not clean_rows:
+            return
+        with self.connect() as con:
+            con.executemany(
+                """
+                INSERT OR REPLACE INTO option_chains(ticker, expiry, strike, bid, ask, mid, oi, iv, ts)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                clean_rows,
+            )
+
+    def get_option_chain(self, *, ticker: str, expiry: str, max_age_minutes: int = 60) -> list[dict]:
+        """Return cached chain rows if fresh enough."""
+        ticker = ticker.upper().strip()
+        expiry = expiry.strip()
+        with self.connect() as con:
+            rows = con.execute(
+                """
+                SELECT strike, bid, ask, mid, oi, iv, ts
+                FROM option_chains
+                WHERE ticker=? AND expiry=? AND ts >= datetime('now', ?)
+                ORDER BY strike ASC
+                """,
+                (ticker, expiry, f"-{abs(int(max_age_minutes))} minutes"),
+            ).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            out.append(
+                {
+                    "strike": r[0],
+                    "bid": r[1],
+                    "ask": r[2],
+                    "mid": r[3],
+                    "oi": r[4],
+                    "iv": r[5],
+                    "ts": r[6],
+                }
+            )
         return out
 
     def upsert_option_outcome(

@@ -36,13 +36,13 @@ def _bucket(cost: float | None) -> str:
 
 def _fmt(val) -> str:
     if val is None:
-        return ""
+        return "N/A"
     try:
         if isinstance(val, float):
             return f"{val:.3f}" if abs(val) < 1000 else f"{val:.0f}"
         return str(val)
     except Exception:
-        return str(val)
+        return "N/A"
 
 
 def _table(headers: list[str], rows: list[list[str]]) -> list[str]:
@@ -154,6 +154,12 @@ def write_summary(db_path: str = "data/sqlite/tracker.db", seed: float = 9300.0)
 
     # Weekly picks buckets
     lines.append("## Weekly Picks (Seed Buckets)")
+    missing_premium = [p for p in picks if p.get("prem_yield_weekly") is None]
+    if picks and len(missing_premium) > (len(picks) * 0.5):
+        lines.append(
+            "⚠️ Option chain not loaded — run ingest_options_chain or enable REST chain source."
+        )
+        lines.append("")
     if not picks:
         lines.append("_No weekly picks computed yet. Run picker._")
     else:
