@@ -22,13 +22,6 @@ except Exception:  # pragma: no cover - optional dependency
     RESTClient = None  # type: ignore
     HAVE_MASSIVE = False
 
-try:
-    import yfinance as yf  # type: ignore
-
-    HAVE_YF = True
-except Exception:  # pragma: no cover - optional dependency
-    yf = None  # type: ignore
-    HAVE_YF = False
 
 try:
     from sklearn.ensemble import RandomForestRegressor  # type: ignore
@@ -309,7 +302,7 @@ def compute_fractal_roughness(close: np.ndarray) -> float:
 
 
 # =============================================================================
-# Data fetch: Massive REST (if available) -> yfinance fallback
+# Data fetch: Massive REST (if available)
 # =============================================================================
 
 
@@ -350,35 +343,6 @@ def fetch_ohlcv_massive_daily(
     return df.sort_values("date").reset_index(drop=True)
 
 
-def fetch_ohlcv_yfinance(
-    ticker: str,
-    start_date: dt.date,
-    end_date: dt.date,
-) -> Optional[pd.DataFrame]:
-    if not HAVE_YF or yf is None:
-        return None
-
-    data = yf.download(ticker, start=start_date, end=end_date + dt.timedelta(days=1), progress=False)
-    if data is None or data.empty:
-        return None
-
-    data = data[["Open", "High", "Low", "Close", "Volume"]].copy()
-    data.reset_index(inplace=True)
-    data.rename(
-        columns={
-            "Date": "date",
-            "Open": "open",
-            "High": "high",
-            "Low": "low",
-            "Close": "close",
-            "Volume": "volume",
-        },
-        inplace=True,
-    )
-    data["date"] = pd.to_datetime(data["date"]).dt.date
-    return data
-
-
 def get_ohlcv_daily(
     ticker: str,
     start_date: dt.date,
@@ -387,12 +351,7 @@ def get_ohlcv_daily(
     df = fetch_ohlcv_massive_daily(ticker, start_date, end_date)
     if df is not None and not df.empty:
         return df
-
-    df = fetch_ohlcv_yfinance(ticker, start_date, end_date)
-    if df is not None and not df.empty:
-        return df
-
-    raise RuntimeError(f"No OHLCV for {ticker} from Massive or yfinance")
+    raise RuntimeError(f"No OHLCV for {ticker} from Massive")
 
 
 # =============================================================================
@@ -677,18 +636,18 @@ def run_oced_scan(
     for sym in symbols:
         quote_px = fetch_massive_quote_price(sym)
         if quote_px is not None:
-            db.set_market_last(sym, run_ts, quote_px)
+            db.set_market_last(sym, run_ts, quote_px, source="massive_rest:last_trade")
 
         row = analyze_ticker(sym, start_date, today, override_last_close=quote_px)
         if row is None:
             continue
         row["lane"] = lane_for_symbol(sym)
         row["ts"] = run_ts
-        row["source"] = "massive" if HAVE_MASSIVE and _massive_api_key() else ("yfinance" if HAVE_YF else "unknown")
+        row["source"] = "massive" if HAVE_MASSIVE and _massive_api_key() else "unknown"
         rows.append(row)
 
         if quote_px is None and row.get("last_close"):
-            db.set_market_last(sym, run_ts, float(row["last_close"]))
+            db.set_market_last(sym, run_ts, float(row["last_close"]), source="massive_rest:last_trade")
 
     _persist_scores(db, run_ts, rows)
     return rows

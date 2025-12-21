@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 from datetime import datetime, timezone, timedelta
 import json
 
@@ -85,6 +86,7 @@ def write_summary(db_path: str = "data/sqlite/tracker.db", seed: float = 9300.0)
             bars_390 += 1
 
     picks = db.fetch_latest_weekly_picks()
+    display_picks = picks
 
     # Promotions recent (last 24h)
     recent_promos = []
@@ -144,6 +146,21 @@ def write_summary(db_path: str = "data/sqlite/tracker.db", seed: float = 9300.0)
     lines.append(f"DB: {db_path}  ")
     lines.append(f"Seed: {seed}")
     lines.append("")
+    def _mask(val: str | None) -> str:
+        if not val:
+            return "None"
+        return val[:5] + "*****"
+
+    lines.append("Runtime credentials:")
+    lines.append(f"- MASSIVE_API_KEY: {_mask(os.getenv('MASSIVE_API_KEY'))}")
+    lines.append("")
+
+    price_sources = sorted({str(p.get("price_source") or "") for p in picks if p.get("price_source")})
+    if price_sources:
+        lines.append("Price sources observed this run:")
+        for src in price_sources:
+            lines.append(f"- {src}")
+        lines.append("")
 
     # Universe status
     lines.append("## Universe Status")
@@ -154,17 +171,14 @@ def write_summary(db_path: str = "data/sqlite/tracker.db", seed: float = 9300.0)
 
     # Weekly picks buckets
     lines.append("## Weekly Picks (Seed Buckets)")
-    missing_premium = [p for p in picks if p.get("prem_yield_weekly") is None]
-    if picks and len(missing_premium) > (len(picks) * 0.5):
-        lines.append(
-            "⚠️ Option chain not loaded — run ingest_options_chain or enable REST chain source."
-        )
-        lines.append("")
-    if not picks:
-        lines.append("_No weekly picks computed yet. Run picker._")
+    if not display_picks:
+        if picks:
+            lines.append("_Picks computed, but all are fallback/missing option data._")
+        else:
+            lines.append("_No weekly picks computed yet. Run picker._")
     else:
         bucketed: dict[str, list[dict]] = {}
-        for p in picks:
+        for p in display_picks:
             bucketed.setdefault(_bucket(p.get("pack_100_cost")), []).append(p)
 
         for name, _, _ in BUCKETS:
@@ -178,31 +192,71 @@ def write_summary(db_path: str = "data/sqlite/tracker.db", seed: float = 9300.0)
             rows = rows[:10]
             table_rows: list[list[str]] = []
             for r in rows:
+                expiry = r.get("expiry") or r.get("recommended_expiry") or ""
+                strike = r.get("strike") if r.get("strike") is not None else r.get("recommended_strike")
+                call_mid = r.get("call_mid") if r.get("call_mid") is not None else r.get("chain_mid")
+                prem_100 = r.get("prem_100") if r.get("prem_100") is not None else r.get("est_weekly_prem_100")
+                prem_yield = r.get("prem_yield") if r.get("prem_yield") is not None else r.get("prem_yield_weekly")
                 table_rows.append([
                     r.get("ticker", ""),
                     r.get("category", "") or "",
-                    f"{_fmt(r.get('price'))} ({r.get('price_source') or 'missing'})",
+                    _fmt(r.get("price")),
                     _fmt(r.get("pack_100_cost")),
-                    r.get("lane", ""),
-                    r.get("recommended_expiry", ""),
-                    _fmt(r.get("recommended_strike")),
-                    _fmt(r.get("est_weekly_prem_100")),
-                    _fmt(r.get("prem_yield_weekly")),
+                    expiry,
+                    _fmt(strike),
+                    _fmt(call_mid),
+                    _fmt(prem_100),
+                    _fmt(prem_yield),
+                    _fmt(r.get("chain_bid")),
+                    _fmt(r.get("chain_ask")),
+                    _fmt(r.get("chain_mid")),
+                    r.get("price_source", ""),
                     r.get("chain_source", ""),
-                    r.get("prem_source", ""),
+                    r.get("premium_source", "") or r.get("prem_source", ""),
+                    r.get("strike_source", ""),
+                    str(r.get("used_fallback") or 0),
+                    str(r.get("missing_price") or 0),
+                    str(r.get("missing_chain") or 0),
                     str(r.get("bars_1m_count") or ""),
-                    r.get("bars_1m_source", ""),
-                    _fmt(r.get("final_rank_score")),
+                    r.get("fft_status", ""),
+                    r.get("fractal_status", ""),
+                    _fmt(r.get("rank_score") or r.get("final_rank_score")),
                 ])
-            lines.extend(_table(
-                ["ticker", "category", "price (source)", "pack_100_cost", "lane", "expiry", "strike", "prem_100", "prem_yield", "chain_source", "prem_source", "bars_1m", "bars_source", "rank_score"],
-                table_rows,
-            ))
+            lines.extend(
+                _table(
+                    [
+                        "ticker",
+                        "category",
+                        "price",
+                        "pack_100_cost",
+                        "expiry",
+                        "strike",
+                        "call_mid",
+                        "prem_100",
+                        "prem_yield",
+                        "chain_bid",
+                        "chain_ask",
+                        "chain_mid",
+                        "price_source",
+                        "chain_source",
+                        "premium_source",
+                        "strike_source",
+                        "used_fallback",
+                        "missing_price",
+                        "missing_chain",
+                        "bars_1m",
+                        "fft",
+                        "fractal",
+                        "rank_score",
+                    ],
+                    table_rows,
+                )
+            )
             lines.append("")
 
     # Top 5 safest
     lines.append("## Top 5 Safest")
-    safest = [p for p in picks if (p.get("lane") or "").upper() == "SAFE"]
+    safest = [p for p in display_picks if (p.get("lane") or "").upper() == "SAFE"]
     safest.sort(key=lambda r: r.get("final_rank_score", r.get("score", 0.0)) or 0.0, reverse=True)
     safest = safest[:5]
     if not safest:
@@ -210,23 +264,64 @@ def write_summary(db_path: str = "data/sqlite/tracker.db", seed: float = 9300.0)
     else:
         for r in safest:
             lines.append(
-                f"- {r.get('ticker')} | price={_fmt(r.get('price'))} | pack={_fmt(r.get('pack_100_cost'))} | strike={_fmt(r.get('recommended_strike'))} | expiry={r.get('recommended_expiry')} | prem_yield={_fmt(r.get('prem_yield_weekly'))}"
+                f"- {r.get('ticker')} | price={_fmt(r.get('price'))} | pack={_fmt(r.get('pack_100_cost'))} | strike={_fmt(r.get('strike') or r.get('recommended_strike'))} | expiry={r.get('expiry') or r.get('recommended_expiry')} | prem_yield={_fmt(r.get('prem_yield') or r.get('prem_yield_weekly'))}"
             )
     lines.append("")
 
     # Top 5 premium leaders
     lines.append("## Top 5 Premium Leaders")
-    prem_rows = [p for p in picks if p.get("prem_yield_weekly") is not None]
-    prem_rows.sort(key=lambda r: r.get("prem_yield_weekly", 0.0) or 0.0, reverse=True)
+    prem_rows = [p for p in display_picks if (p.get("prem_yield") or p.get("prem_yield_weekly")) is not None]
+    prem_rows.sort(key=lambda r: r.get("prem_yield", r.get("prem_yield_weekly", 0.0)) or 0.0, reverse=True)
     prem_rows = prem_rows[:5]
     if not prem_rows:
         lines.append("_No premium estimates available._")
     else:
         for r in prem_rows:
             lines.append(
-                f"- {r.get('ticker')} | yield={_fmt(r.get('prem_yield_weekly'))} | prem_100={_fmt(r.get('est_weekly_prem_100'))} | price={_fmt(r.get('price'))}"
+                f"- {r.get('ticker')} | yield={_fmt(r.get('prem_yield') or r.get('prem_yield_weekly'))} | prem_100={_fmt(r.get('prem_100') or r.get('est_weekly_prem_100'))} | price={_fmt(r.get('price'))}"
             )
     lines.append("")
+
+    if any(p.get("used_fallback") for p in picks):
+        lines.append("⚠ FALLBACK DATA PRESENT")
+        lines.append("Check price_source/premium_source columns.")
+        lines.append("")
+
+    # Missing data audit
+    missing_rows = db.fetch_latest_weekly_missing()
+    lines.append("## Missing Data")
+    if not missing_rows:
+        lines.append("_No missing data logged for the latest run._")
+        lines.append("")
+    else:
+        missing_price = [m for m in missing_rows if m.get("stage") == "price"]
+        missing_chain = [m for m in missing_rows if m.get("stage") == "chain"]
+        invalid_premium = [m for m in missing_rows if m.get("stage") == "premium"]
+        selection_fail = [m for m in missing_rows if m.get("stage") == "selection"]
+
+        def _render_missing(title: str, rows: list[dict]) -> None:
+            lines.append(f"### {title} (n={len(rows)})")
+            if not rows:
+                lines.append("_none_")
+                lines.append("")
+                return
+            table_rows = []
+            for r in rows[:20]:
+                table_rows.append(
+                    [
+                        r.get("ticker", ""),
+                        r.get("reason", ""),
+                        r.get("detail", "") or "",
+                        r.get("source", "") or "",
+                    ]
+                )
+            lines.extend(_table(["ticker", "reason", "detail", "source"], table_rows))
+            lines.append("")
+
+        _render_missing("Missing Price", missing_price)
+        _render_missing("Missing Chain Snapshot", missing_chain)
+        _render_missing("Selection Failures", selection_fail)
+        _render_missing("Invalid Premium", invalid_premium)
 
     # Promotions
     lines.append("## Promoted This Run (last 24h)")

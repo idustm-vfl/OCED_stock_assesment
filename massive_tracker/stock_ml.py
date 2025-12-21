@@ -5,7 +5,7 @@ from typing import Dict, Optional
 
 import numpy as np
 
-from .oced import fetch_ohlcv_yfinance, fetch_ohlcv_massive_daily
+from .oced import fetch_ohlcv_massive_daily
 from .store import DB
 from .watchlist import Watchlists
 
@@ -55,8 +55,6 @@ def _fetch_close_series(ticker: str, lookback_days: int) -> Optional[np.ndarray]
 
     # Prefer Massive daily aggregates if available
     df = fetch_ohlcv_massive_daily(ticker, start_date, end_date)
-    if df is None or df.empty:
-        df = fetch_ohlcv_yfinance(ticker, start_date, end_date)
     if df is None or df.empty:
         return None
     closes = df["close" if "close" in df.columns else "Close"]

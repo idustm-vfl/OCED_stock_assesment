@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from datetime import datetime, timedelta
 from typing import List, Dict
 
@@ -64,7 +65,7 @@ def promote_from_weekly_picks(
         for t, e, r, s in rows:
             existing_keys.add((str(t).upper(), str(e), str(r).upper(), float(s)))
 
-    def log_decision(ticker: str, expiry: str, strike: float, decision: str, reason: str):
+    def log_decision(ticker: str, expiry: str, strike: float, decision: str, reason: str, sources_json: str | None = None):
         db.log_promotion(
             ts=datetime.utcnow().isoformat(),
             ticker=ticker,
@@ -74,18 +75,19 @@ def promote_from_weekly_picks(
             seed=seed,
             decision=decision,
             reason=reason,
+            sources_json=sources_json,
         )
 
     for pick in picks:
         ticker = pick.get("ticker") or ""
         price = pick.get("price")
         pack_cost = pick.get("pack_100_cost")
-        prem_est = pick.get("est_weekly_prem_100")
-        prem_yield = pick.get("prem_yield_weekly")
+        prem_est = pick.get("prem_100") if pick.get("prem_100") is not None else pick.get("est_weekly_prem_100")
+        prem_yield = pick.get("prem_yield") if pick.get("prem_yield") is not None else pick.get("prem_yield_weekly")
         bar_count = pick.get("bars_1m_count") or 0
-        recommended_strike = pick.get("recommended_strike")
+        recommended_strike = pick.get("strike") if pick.get("strike") is not None else pick.get("recommended_strike")
 
-        rec_expiry = pick.get("recommended_expiry") or default_expiry
+        rec_expiry = pick.get("expiry") or pick.get("recommended_expiry") or default_expiry
         ml_row = db.get_latest_stock_ml(ticker)
         emove = ml_row.get("expected_move_5d") if ml_row else None
         strike_raw = recommended_strike
@@ -130,7 +132,19 @@ def promote_from_weekly_picks(
                 decision = "error"
                 decision_reason = str(e)
 
-        log_decision(ticker, rec_expiry, strike, decision, decision_reason)
+        sources_json = None
+        try:
+            sources_json = json.dumps(
+                {
+                    "price_source": pick.get("price_source"),
+                    "chain_source": pick.get("chain_source"),
+                    "premium_source": pick.get("premium_source") or pick.get("prem_source"),
+                    "strike_source": pick.get("strike_source"),
+                }
+            )
+        except Exception:
+            sources_json = None
+        log_decision(ticker, rec_expiry, strike, decision, decision_reason, sources_json)
         results.append(
             PromotionResult(
                 ticker=ticker,

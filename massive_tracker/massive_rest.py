@@ -4,6 +4,12 @@ import requests
 from .config import CFG
 
 
+def _mask(val: str | None) -> str:
+    if not val:
+        return "None"
+    return val[:5] + "*****"
+
+
 class MassiveREST:
     def __init__(self, base: str | None = None, api_key: str | None = None):
         self.base = (base or CFG.rest_base or "https://api.massive.com").rstrip("/")
@@ -14,7 +20,10 @@ class MassiveREST:
         if not url.startswith("http"):
             url = self.base + path_or_url
         headers = {"Authorization": f"Bearer {self.api_key}"}
+        print(f"[MASSIVE REST] endpoint={url} key={_mask(self.api_key)}")
         resp = requests.get(url, headers=headers, params=params, timeout=30)
+        if resp.status_code != 200:
+            print(f"[MASSIVE REST ERROR] endpoint={url} key={_mask(self.api_key)} status={resp.status_code}")
         resp.raise_for_status()
         return resp.json()
 

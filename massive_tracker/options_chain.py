@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import List
 from datetime import datetime, timezone
 
-from .massive_rest import MassiveREST
+from .massive_client import get_option_chain_snapshot
 from .store import DB
 from .flatfiles import build_strike_candidates
 
@@ -15,13 +15,19 @@ def _now_ts() -> str:
 
 
 def _normalize_quote(raw: dict) -> dict:
-    strike = raw.get("strike") or raw.get("strike_price") or raw.get("strikePrice")
-    bid = raw.get("bid") or raw.get("best_bid") or raw.get("bestBid")
-    ask = raw.get("ask") or raw.get("best_ask") or raw.get("bestAsk")
-    mid = raw.get("mid") or raw.get("midpoint") or raw.get("mark")
+    details = raw.get("details") or {}
+    last_quote = raw.get("last_quote") or {}
+    greeks = raw.get("greeks") or {}
+
+    strike = raw.get("strike") or raw.get("strike_price") or raw.get("strikePrice") or details.get("strike_price")
+    bid = raw.get("bid") or raw.get("best_bid") or raw.get("bestBid") or last_quote.get("bid")
+    ask = raw.get("ask") or raw.get("best_ask") or raw.get("bestAsk") or last_quote.get("ask")
+    mid = raw.get("mid") or raw.get("midpoint") or raw.get("mark") or last_quote.get("midpoint")
     oi = raw.get("oi") or raw.get("open_interest") or raw.get("openInterest")
-    iv = raw.get("iv") or raw.get("implied_vol") or raw.get("impliedVol")
-    vol = raw.get("vol") or raw.get("volume")
+    iv = raw.get("iv") or raw.get("implied_vol") or raw.get("impliedVol") or raw.get("implied_volatility")
+    vol = raw.get("vol") or raw.get("volume") or (raw.get("day") or {}).get("volume")
+    delta = raw.get("delta") or greeks.get("delta")
+    contract = raw.get("contract") or details.get("ticker") or raw.get("ticker")
 
     if mid is None and bid is not None and ask is not None:
         try:
@@ -37,16 +43,17 @@ def _normalize_quote(raw: dict) -> dict:
         "oi": oi,
         "iv": iv,
         "vol": vol,
+        "delta": delta,
+        "contract": contract,
     }
 
 
 def _fetch_from_massive(ticker: str, expiry: str) -> List[dict]:
-    client = MassiveREST()
     try:
-        data = client.get_option_chain_snapshot(underlying=ticker, expiry=expiry)
+        chain, _ts, _source = get_option_chain_snapshot(underlying=ticker, expiration=expiry)
     except Exception:
         return []
-    results = data.get("results") or data.get("options") or []
+    results = chain or []
     out: List[dict] = []
     for r in results:
         norm = _normalize_quote(r or {})
@@ -102,16 +109,16 @@ def get_option_chain(
     if use_cache:
         cached = db.get_option_chain(ticker=ticker, expiry=expiry, max_age_minutes=max_age_minutes)
         if cached:
-            source = "cache_chain_snapshot"
+            source = "cache:option_chain_snapshot"
             return (cached, source) if return_source else cached
 
     quotes = _fetch_from_massive(ticker, expiry)
     if quotes:
-        source = "massive_rest_chain_snapshot"
+        source = "massive_rest:option_chain_snapshot"
     else:
         quotes = _fetch_from_flatfiles(ticker, expiry)
         if quotes:
-            source = "flatfile_chain_bootstrap"
+            source = "flatfile:chain_bootstrap"
 
     if quotes:
         db.upsert_option_chain_rows(ticker=ticker, expiry=expiry, rows=quotes, ts=_now_ts())

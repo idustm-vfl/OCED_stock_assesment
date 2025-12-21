@@ -24,8 +24,11 @@ from .oced import run_oced_scan
 from .promotion import promote_from_weekly_picks
 from .flatfiles import download_range, load_option_file
 from .massive_rest import MassiveREST
+from .massive_client import get_stock_last_price, get_option_chain_snapshot
 from .universe import sync_universe, get_universe
 from .summary import write_summary
+from .report_monday import write_monday_report
+from .weekly_close import write_weekly_scorecard
 from .compare_models import run_compare
 
 from .wizard import run_wizard
@@ -309,6 +312,217 @@ def picker(db_path: str = "data/sqlite/tracker.db", top_n: int = 5):
 
 
 @app.command()
+def env_check():
+    """Print which Massive-related env vars are set (no values)."""
+    def _mask(val: str | None) -> str:
+        if not val:
+            return "None"
+        return val[:5] + "*****"
+
+    print("[ENV CHECK]")
+    keys = [
+        "MASSIVE_API_KEY",
+        "MASSIVE_ACCESS_KEY",
+        "MASSIVE_SECRET_KEY",
+        "MASSIVE_S3_ENDPOINT",
+        "MASSIVE_S3_BUCKET",
+    ]
+    for k in keys:
+        if "KEY" in k:
+            print(f"{k}: {_mask(os.getenv(k))}")
+        else:
+            print(f"{k}: {bool(os.getenv(k))}")
+    print("ALLOW_YFINANCE_FALLBACK: False")
+
+
+@app.command()
+def smoke(db_path: str = "data/sqlite/tracker.db"):
+    """Smoke test Massive pricing + picker math/provenance."""
+    from datetime import datetime, timedelta
+
+    db = DB(db_path)
+    db.connect().close()
+    sync_universe(db)
+    tickers = [t for t, _ in db.list_universe(enabled_only=True)]
+    if not tickers:
+        raise RuntimeError("Universe empty. Run `python -m massive_tracker.cli init` first.")
+
+    if not os.getenv("MASSIVE_API_KEY"):
+        print("[SMOKE] MASSIVE_API_KEY missing. Set it in your environment.")
+        return
+
+    tickers = tickers[:3]
+    print(f"[blue]Smoke[/blue] tickers={tickers}")
+    key_mask = (os.getenv("MASSIVE_API_KEY") or "None")[:5] + "*****"
+    print(f"[SMOKE] MASSIVE_API_KEY detected: {key_mask}")
+
+    price_rows = []
+    missing_cache = []
+    for t in tickers:
+        price, ts_val, source = db.get_market_last(t)
+        if price is not None:
+            price_rows.append({"ticker": t, "price": price, "ts": ts_val, "source": source or "cache_market_last"})
+            print(f"[SMOKE] price source for {t}: {source or 'cache_market_last'}")
+        else:
+            missing_cache.append(t)
+
+    if missing_cache:
+        print("[yellow]Missing market_last cache[/yellow] for:", ", ".join(missing_cache))
+        print("Run the stocks stream for ~2 minutes then rerun smoke.")
+        return
+
+    print(f"[green]Prices ok[/green] rows={len(price_rows)}")
+
+    days_ahead = (4 - datetime.utcnow().weekday()) % 7
+    expiry = (datetime.utcnow() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+    chain, chain_ts, chain_source = get_option_chain_snapshot(underlying=tickers[0], expiration=expiry)
+    if not chain:
+        raise RuntimeError(f"Missing chain snapshot for {tickers[0]} {expiry}")
+    print(f"[green]Chain ok[/green] {tickers[0]} expiry={expiry} rows={len(chain)} source={chain_source}")
+
+    picks = run_weekly_picker(db_path=db_path, top_n=10)
+    if not picks:
+        raise RuntimeError("Picker returned no rows.")
+
+    def _assert_pick(p: dict) -> None:
+        strike = p.get("strike") if p.get("strike") is not None else p.get("recommended_strike")
+        call_mid = p.get("call_mid") if p.get("call_mid") is not None else p.get("chain_mid")
+        prem_100 = p.get("prem_100") if p.get("prem_100") is not None else p.get("est_weekly_prem_100")
+        prem_yield = p.get("prem_yield") if p.get("prem_yield") is not None else p.get("prem_yield_weekly")
+        price = p.get("price")
+        if strike is None:
+            raise RuntimeError(f"Missing strike for {p.get('ticker')}")
+        if call_mid is None or call_mid <= 0:
+            raise RuntimeError(f"Invalid call_mid for {p.get('ticker')}: {call_mid}")
+        calc_prem_100 = round(float(call_mid) * 100.0, 2)
+        if prem_100 is None or abs(calc_prem_100 - float(prem_100)) > 0.05:
+            raise RuntimeError(f"Invalid prem_100 for {p.get('ticker')}: {prem_100} vs {calc_prem_100}")
+        if price is None:
+            raise RuntimeError(f"Missing price for {p.get('ticker')}")
+        calc_yield = calc_prem_100 / (float(price) * 100.0)
+        if prem_yield is None or abs(calc_yield - float(prem_yield)) > 1e-4:
+            raise RuntimeError(f"Invalid prem_yield for {p.get('ticker')}: {prem_yield} vs {calc_yield}")
+        for field in ("price_source", "premium_source", "strike_source"):
+            if not p.get(field):
+                raise RuntimeError(f"Missing {field} for {p.get('ticker')}")
+
+    for row in picks:
+        _assert_pick(row)
+
+    print("[green]Criteria A-C satisfied[/green]")
+    print("[bold]First 10 picks[/bold]")
+    for p in picks[:10]:
+        print(
+            {
+                "ticker": p.get("ticker"),
+                "price": p.get("price"),
+                "pack_100_cost": p.get("pack_100_cost"),
+                "expiry": p.get("expiry") or p.get("recommended_expiry"),
+                "strike": p.get("strike") or p.get("recommended_strike"),
+                "call_mid": p.get("call_mid") or p.get("chain_mid"),
+                "prem_100": p.get("prem_100") or p.get("est_weekly_prem_100"),
+                "prem_yield": p.get("prem_yield") or p.get("prem_yield_weekly"),
+                "price_source": p.get("price_source"),
+                "premium_source": p.get("premium_source") or p.get("prem_source"),
+                "strike_source": p.get("strike_source"),
+                "bars_1m_count": p.get("bars_1m_count"),
+                "fft_status": p.get("fft_status"),
+                "fractal_status": p.get("fractal_status"),
+            }
+        )
+
+
+@app.command()
+def start(
+    db_path: str = "data/sqlite/tracker.db",
+    stream_minutes: int = 2,
+    top_n: int = 10,
+    promote: bool = False,
+    seed: float = 9300.0,
+    lane: str = "SAFE_HIGH",
+):
+    """Sync universe, stream stocks, run picker, optionally promote, then summary."""
+    import time
+    from massive_tracker.ws_client import MassiveWSClient
+
+    db = DB(db_path)
+    sync_universe(db)
+    tickers = [t for t, _ in db.list_universe(enabled_only=True)]
+    if not tickers:
+        raise RuntimeError("Universe empty. Run `python -m massive_tracker.cli init` first.")
+
+    client = MassiveWSClient(market_cache_db_path=db_path)
+    client.subscribe_stocks(tickers)
+    thread = client.run_background()
+
+    deadline = time.time() + max(1, stream_minutes) * 60
+    while time.time() < deadline:
+        have = sum(1 for t in tickers[:20] if db.get_market_last(t)[0] is not None)
+        if have >= min(5, len(tickers[:20])):
+            break
+        time.sleep(5)
+
+    client.close()
+    if thread.is_alive():
+        time.sleep(1)
+
+    picks = run_weekly_picker(db_path=db_path, top_n=top_n)
+    if promote:
+        promote_from_weekly_picks(db_path=db_path, seed=seed, lane=lane, top_n=min(3, top_n))
+    write_summary(db_path=db_path, seed=seed)
+    print(f"[green]Start complete[/green] picks={len(picks)}")
+
+
+@app.command()
+def monday(
+    db_path: str = "data/sqlite/tracker.db",
+    seed: float = 9300.0,
+    lane: str = "SAFE_HIGH",
+    top_n: int = 10,
+):
+    """Monday run: ensure fresh cache, run picker, promote, write report."""
+    from datetime import datetime, timezone, timedelta
+
+    db = DB(db_path)
+    sync_universe(db)
+    tickers = [t for t, _ in db.list_universe(enabled_only=True)]
+    if not tickers:
+        print("[yellow]Universe empty. Run init first.[/yellow]")
+        return
+
+    stale = []
+    now = datetime.now(timezone.utc)
+    for t in tickers:
+        price, ts_val, _source = db.get_market_last(t)
+        if price is None or not ts_val:
+            stale.append(t)
+            continue
+        try:
+            ts_dt = datetime.fromisoformat(str(ts_val).replace("Z", "+00:00"))
+            if now - ts_dt > timedelta(minutes=20):
+                stale.append(t)
+        except Exception:
+            stale.append(t)
+
+    if stale:
+        print("[yellow]Stale cache detected[/yellow]. Run the stock stream and retry.")
+        print("Stale/missing:", ", ".join(stale[:30]))
+        return
+
+    picks = run_weekly_picker(db_path=db_path, top_n=top_n)
+    promote_from_weekly_picks(db_path=db_path, seed=seed, lane=lane, top_n=min(3, top_n))
+    write_monday_report(db_path=db_path)
+    print(f"[green]Monday run complete[/green] picks={len(picks)}")
+
+
+@app.command()
+def friday_close(db_path: str = "data/sqlite/tracker.db"):
+    """Friday close: compute outcomes and write weekly scorecard."""
+    md = write_weekly_scorecard(db_path=db_path)
+    print(f"[green]Weekly scorecard written[/green] lines={len(md.splitlines())}")
+
+
+@app.command()
 def chain_fetch(db_path: str = "data/sqlite/tracker.db", expiry: str = "", top_n: int = 0):
     """Fetch option chain snapshots for enabled tickers and cache to sqlite."""
     from massive_tracker.options_chain import get_option_chain
@@ -352,7 +566,11 @@ def audit(
     db = DB(db_path)
     picks = db.fetch_latest_weekly_picks()
     if expiry:
-        picks = [p for p in picks if (p.get("recommended_expiry") == expiry or p.get("recommended_expiry") is None)]
+        picks = [
+            p
+            for p in picks
+            if (p.get("expiry") == expiry or p.get("recommended_expiry") == expiry or p.get("recommended_expiry") is None)
+        ]
     if top:
         picks = picks[:top]
 
@@ -364,7 +582,7 @@ def audit(
 
     source_rows = []
     math_rows = []
-    fallback_disabled = str(os.getenv("ALLOW_YFINANCE_FALLBACK", os.getenv("VFL_ALLOW_YFINANCE_FALLBACK", "0"))).lower() not in {"1", "true", "yes"}
+    fallback_disabled = True
     math_failures = 0
     missing_chain = 0
     used_fallback_count = 0
@@ -372,9 +590,9 @@ def audit(
     for p in picks:
         price = p.get("price")
         price_source = p.get("price_source") or "missing"
-        chain_mid = p.get("chain_mid")
-        prem_reported = p.get("est_weekly_prem_100")
-        prem_yield_reported = p.get("prem_yield_weekly")
+        chain_mid = p.get("call_mid") if p.get("call_mid") is not None else p.get("chain_mid")
+        prem_reported = p.get("prem_100") if p.get("prem_100") is not None else p.get("est_weekly_prem_100")
+        prem_yield_reported = p.get("prem_yield") if p.get("prem_yield") is not None else p.get("prem_yield_weekly")
         pack_reported = p.get("pack_100_cost")
 
         pack_calc = safe_round(float(price) * 100.0, 2) if price is not None else None
@@ -403,12 +621,12 @@ def audit(
             math_failures += 1
 
         chain_source = p.get("chain_source") or "missing_chain"
-        prem_source = p.get("prem_source") or "missing_chain"
+        prem_source = p.get("premium_source") or p.get("prem_source") or "missing_chain"
         strike_source = p.get("strike_source") or "missing_chain"
         bars_source = p.get("bars_1m_source") or "missing"
         missing_chain_flag = 1 if chain_source.startswith("missing") or chain_mid is None else 0
         missing_chain += missing_chain_flag
-        used_fallback = 1 if price_source == "yfinance" else 0
+        used_fallback = 0
         used_fallback_count += used_fallback
 
         source_rows.append(
@@ -417,14 +635,14 @@ def audit(
                 "ticker": p.get("ticker"),
                 "category": p.get("category"),
                 "lane": p.get("lane"),
-                "expiry": p.get("recommended_expiry"),
+                "expiry": p.get("expiry") or p.get("recommended_expiry"),
                 "price": price,
                 "price_source": price_source,
                 "bid": p.get("chain_bid"),
                 "ask": p.get("chain_ask"),
                 "mid": chain_mid,
                 "prem_source": prem_source,
-                "strike": p.get("recommended_strike"),
+                "strike": p.get("strike") or p.get("recommended_strike"),
                 "strike_source": strike_source,
                 "prem_100": prem_reported,
                 "prem_yield": prem_yield_reported,
@@ -568,7 +786,7 @@ def stream(
             market_cache_db_path=db_path if cache_market_last else None,
         )
         client.on_aggregate_minute = handler
-        client.subscribe(symbols)
+        client.subscribe_stocks(symbols)
         print("[green]Trigger mode:[/green] monitor runs on near-strike or rapid-up events")
     else:
         def on_bar(event):
@@ -582,7 +800,7 @@ def stream(
             market_cache_db_path=db_path if cache_market_last else None,
         )
         client.on_aggregate_minute = on_bar
-        client.subscribe(symbols)
+        client.subscribe_stocks(symbols)
     
     try:
         client.run()

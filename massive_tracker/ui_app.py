@@ -176,7 +176,7 @@ def _start_stream(
                 cooldown_sec=cooldown_sec,
             )
             client.on_aggregate_minute = handler
-        client.subscribe(symbols)
+        client.subscribe_stocks(symbols)
         thread = client.run_background()
     except Exception as e:
         st.error(f"Stream failed: {e}")

@@ -35,10 +35,21 @@ def _first_env(*names: str) -> str | None:
     return None
 
 
+def _mask(val: str | None) -> str:
+    if not val:
+        return "None"
+    return val[:5] + "*****"
+
+
 def load_runtime_config() -> RuntimeConfig:
     key = os.getenv("MASSIVE_API_KEY")
     if not key:
         raise RuntimeError("Missing MASSIVE_API_KEY in Codespaces secrets")
+
+    if os.getenv("VFL_DEBUG_CONFIG", "").strip().lower() in {"1", "true", "yes"}:
+        print(f"[CONFIG] MASSIVE_API_KEY: {_mask(os.getenv('MASSIVE_API_KEY'))}")
+        print(f"[CONFIG] MASSIVE_ACCESS_KEY: {_mask(os.getenv('MASSIVE_ACCESS_KEY'))}")
+        print(f"[CONFIG] MASSIVE_SECRET_KEY: {_mask(os.getenv('MASSIVE_SECRET_KEY'))}")
 
     return RuntimeConfig(
         massive_api_key=key.strip(),

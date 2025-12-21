@@ -77,7 +77,7 @@ def test_prices_available(ensure_init: None) -> None:
     db = DB(str(DB_PATH))
     prices = db.get_latest_prices(get_universe())
     non_null = [p for p in prices if p and p.get("price")]
-    assert non_null, "No prices returned from DB or yfinance fallback"
+    assert non_null, "No prices returned from DB or Massive REST"
 
 
 def test_picker_writes_rows(ensure_init: None) -> None:

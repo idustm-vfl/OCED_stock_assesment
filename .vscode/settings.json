@@ -9,5 +9,6 @@
       "path": "${workspaceFolder}/scripts/workspace_shell.sh"
     }
   },
-  "terminal.integrated.defaultProfile.linux": "Workspace"
+  "terminal.integrated.defaultProfile.linux": "Workspace",
+  "chatgpt.openOnStartup": true
 }

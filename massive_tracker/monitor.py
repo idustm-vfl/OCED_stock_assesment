@@ -337,7 +337,7 @@ def get_option_snapshot(
         iv = option_cache.get("iv")
 
     try:
-        cached_price, _ = db.get_market_last(ticker)
+        cached_price, _, _ = db.get_market_last(ticker)
         if cached_price is not None:
             stock_price = float(cached_price)
             stock_source = "cache_market_last"

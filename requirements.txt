@@ -7,8 +7,8 @@ duckdb
 rich
 typer
 requests
+massive
 websocket-client
-yfinance
 scikit-learn
 streamlit
 Pytest 

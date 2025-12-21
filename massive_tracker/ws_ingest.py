@@ -77,12 +77,13 @@ def handle_msgs(db: DB, msgs: List[WebSocketMessage]):
                     delta=delta,
                     oi=oi,
                     volume=volume,
+                    source="ws:options_agg_1m",
                 )
             else:
                 price = getattr(m, "close", None) or getattr(m, "last", None)
                 if price is None:
                     continue
-                db.set_market_last(ticker=sym, ts=ts, price=price)
+                db.set_market_last(ticker=sym, ts=ts, price=price, source="ws:stocks_agg_1m")
 
   
 def main():

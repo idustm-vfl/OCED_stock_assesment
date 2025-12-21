@@ -307,7 +307,6 @@ Ensure these are called automatically:
 
 * Do not reintroduce JSONL as a dependency for summary.
 * Keep config loads centralized (CFG only; no new getenv calls in runtime modules).
-* If yfinance is optional, guard import and mark `price_source="yfinance"` when used.
 
 ---
 

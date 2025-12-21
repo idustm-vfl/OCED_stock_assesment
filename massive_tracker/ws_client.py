@@ -59,6 +59,28 @@ def _append_jsonl(path: Path, obj: dict) -> None:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
 
+def _parse_occ_symbol(sym: str) -> tuple[str, str, str, float] | None:
+    """
+    SPY251219C00650000 ->
+      ticker=SPY
+      expiry=2025-12-19
+      right=C
+      strike=65.0
+    """
+    raw = sym.split("O:", 1)[-1]
+    try:
+        ticker = raw[: raw.find("2")]
+        y = raw[len(ticker) : len(ticker) + 2]
+        m = raw[len(ticker) + 2 : len(ticker) + 4]
+        d = raw[len(ticker) + 4 : len(ticker) + 6]
+        right = raw[len(ticker) + 6]
+        strike = float(raw[len(ticker) + 7 :]) / 1000.0
+        expiry = f"20{y}-{m}-{d}"
+        return ticker, expiry, right, strike
+    except Exception:
+        return None
+
+
 class MassiveWSClient:
     """
     WebSocket client for Massive real-time data.
@@ -84,11 +106,16 @@ class MassiveWSClient:
                 "MASSIVE_API_KEY not set. "
                 "Set it in your environment or pass api_key= parameter."
             )
+        key_mask = (self.api_key or "None")[:5] + "*****"
+        print(f"[MASSIVE WS] using API key: {key_mask}")
         
         self.ws_url = ws_url or self.DEFAULT_WS_URL
+        self.ws_feed = CFG.ws_feed
+        self.ws_market = CFG.ws_market
         self.ws: Optional[websocket.WebSocketApp] = None
         self.subscribed_symbols: set[str] = set()
         self.is_authenticated = False
+        self.market_mode = "unknown"
 
         self.market_cache_db = DB(market_cache_db_path) if market_cache_db_path else None
         
@@ -140,10 +167,14 @@ class MassiveWSClient:
         close = ev.get("c")
         if sym is None or close is None:
             return
+        sym_val = str(sym)
+        occ = None
+        if sym_val.startswith("O:") or len(sym_val) >= 15:
+            occ = _parse_occ_symbol(sym_val)
         try:
             px = float(close)
         except Exception:
-            return
+            px = None
 
         ts_ms = ev.get("e")
         try:
@@ -152,20 +183,49 @@ class MassiveWSClient:
             ts_iso = _utc_now()
 
         try:
-            self.market_cache_db.set_market_last(str(sym), ts_iso, px)
+            if occ is None and px is not None:
+                self.market_cache_db.set_market_last(str(sym), ts_iso, px, source="ws:stocks_agg_1m")
         except Exception as e:
             if self.on_error:
                 self.on_error(e)
         try:
-            self.market_cache_db.upsert_price_bar_1m(
-                ts=ts_iso,
-                ticker=str(sym),
-                o=ev.get("o"),
-                h=ev.get("h"),
-                l=ev.get("l"),
-                c=ev.get("c"),
-                v=ev.get("v"),
-            )
+            if occ is None:
+                self.market_cache_db.upsert_price_bar_1m(
+                    ts=ts_iso,
+                    ticker=str(sym),
+                    o=ev.get("o"),
+                    h=ev.get("h"),
+                    l=ev.get("l"),
+                    c=ev.get("c"),
+                    v=ev.get("v"),
+                    source="ws:stocks_agg_1m",
+                )
+            else:
+                ticker, expiry, right, strike = occ
+                bid = ev.get("b")
+                ask = ev.get("a")
+                mid = None
+                if bid is not None and ask is not None:
+                    try:
+                        mid = (float(bid) + float(ask)) / 2.0
+                    except Exception:
+                        mid = None
+                self.market_cache_db.set_options_last(
+                    ticker=ticker,
+                    expiry=expiry,
+                    right=right,
+                    strike=strike,
+                    ts=ts_iso,
+                    bid=bid,
+                    ask=ask,
+                    mid=mid,
+                    last=px,
+                    iv=ev.get("iv"),
+                    delta=ev.get("delta"),
+                    oi=ev.get("oi"),
+                    volume=ev.get("v"),
+                    source="ws:options_agg_1m",
+                )
         except Exception as e:
             if self.on_error:
                 self.on_error(e)
@@ -180,6 +240,12 @@ class MassiveWSClient:
         }
         self.ws.send(json.dumps(auth_msg))
         print("[ws] Sent auth")
+
+    def _send_subscribe(self, params: list[str]) -> None:
+        if not self.ws or not params:
+            return
+        sub_msg = {"action": "subscribe", "params": ",".join(params)}
+        self.ws.send(json.dumps(sub_msg))
     
     def subscribe(self, symbols: list[str]):
         """
@@ -187,35 +253,59 @@ class MassiveWSClient:
         Can be called before or after connection (will queue if not connected).
         """
         symbols = [s.upper().strip() for s in symbols]
+        payload = [f"AM.{sym}" for sym in symbols]
         
         if not self.ws or not self.is_authenticated:
             # Queue for later
-            self.subscribed_symbols.update(symbols)
+            self.subscribed_symbols.update(payload)
             print(f"[ws] Queued subscription: {symbols}")
             return
         
         # Send subscription
-        sub_msg = {
-            "action": "subscribe",
-            "params": ",".join(f"AM.{sym}" for sym in symbols),  # AM = aggregate minute
-        }
-        self.ws.send(json.dumps(sub_msg))
-        self.subscribed_symbols.update(symbols)
+        self._send_subscribe(payload)
+        self.subscribed_symbols.update(payload)
         print(f"[ws] Subscribed to {len(symbols)} symbols")
+
+    def subscribe_stocks(self, symbols: list[str]):
+        symbols = [s.upper().strip() for s in symbols]
+        self.market_mode = "stocks"
+        payload = [f"AM.S:{sym}" for sym in symbols]
+        if not self.ws or not self.is_authenticated:
+            self.subscribed_symbols.update(payload)
+            print(f"[ws] Queued stock subscriptions: {symbols}")
+            return
+        sub_msg = {"action": "subscribe", "params": ",".join(payload)}
+        self.ws.send(json.dumps(sub_msg))
+        self.subscribed_symbols.update(payload)
+        print(f"[ws] Subscribed to stocks: {len(symbols)} symbols")
+
+    def subscribe_options(self, occ_symbols: list[str]):
+        symbols = [s.upper().strip() for s in occ_symbols]
+        self.market_mode = "options"
+        payload = [sym if sym.startswith("AM.O:") else f"AM.O:{sym}" for sym in symbols]
+        if not self.ws or not self.is_authenticated:
+            self.subscribed_symbols.update(payload)
+            print(f"[ws] Queued option subscriptions: {symbols}")
+            return
+        sub_msg = {"action": "subscribe", "params": ",".join(payload)}
+        self.ws.send(json.dumps(sub_msg))
+        self.subscribed_symbols.update(payload)
+        print(f"[ws] Subscribed to options: {len(symbols)} symbols")
     
     def unsubscribe(self, symbols: list[str]):
         """Unsubscribe from symbols."""
         symbols = [s.upper().strip() for s in symbols]
+        payload = [f"AM.{sym}" for sym in symbols]
         
         if not self.ws or not self.is_authenticated:
             return
         
         unsub_msg = {
             "action": "unsubscribe",
-            "params": ",".join(f"AM.{sym}" for sym in symbols),
+            "params": ",".join(payload),
         }
         self.ws.send(json.dumps(unsub_msg))
-        self.subscribed_symbols.difference_update(symbols)
+        self.subscribed_symbols.difference_update(payload)
         print(f"[ws] Unsubscribed from {len(symbols)} symbols")
     
     def _handle_event(self, ev: dict):
@@ -240,7 +330,7 @@ class MassiveWSClient:
                 self.is_authenticated = True
                 # Send queued subscriptions
                 if self.subscribed_symbols:
-                    self.subscribe(list(self.subscribed_symbols))
+                    self._send_subscribe(list(self.subscribed_symbols))
             
             if self.on_status:
                 self.on_status(ev)
@@ -270,6 +360,9 @@ class MassiveWSClient:
         Start the WebSocket client (blocking).
         Runs in current thread.
         """
+        key_mask = (self.api_key or "None")[:5] + "*****"
+        market = self.market_mode if self.market_mode != "unknown" else self.ws_market
+        print(f"[MASSIVE WS] feed={self.ws_feed} market={market} key={key_mask}")
         websocket.enableTrace(False)  # Set True for debug
         
         self.ws = websocket.WebSocketApp(
