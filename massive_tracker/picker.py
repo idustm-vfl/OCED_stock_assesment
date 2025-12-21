@@ -231,8 +231,8 @@ def _select_chain_option(
     lane: str,
     expiry: str,
     target_strike: float | None,
+    quotes: list[dict],
 ) -> tuple[dict | None, str]:
-    quotes = get_option_chain(ticker, expiry)
     if not quotes:
         return None, "missing_option_chain"
 
@@ -274,7 +274,7 @@ def _select_chain_option(
             except Exception:
                 pass
 
-        prem_100 = mid_f * 100.0
+        prem_100 = round(mid_f * 100.0, 2)
         prem_yield = _safe_div(prem_100, price * 100.0 if price is not None else None)
         if prem_yield is None or prem_yield < min_yield:
             continue
@@ -284,10 +284,13 @@ def _select_chain_option(
             {
                 "strike": strike_f,
                 "mid": mid_f,
+                "bid": bid,
+                "ask": ask,
                 "prem_100": prem_100,
                 "prem_yield": prem_yield,
                 "spread_pct": spread_pct,
                 "delta": delta,
+                "prem_source": "chain_mid",
                 "score": score,
             }
         )
@@ -338,6 +341,8 @@ def run_weekly_picker(
         price_row = next((r for r in db.get_latest_prices([ticker]) if r["ticker"] == ticker.upper()), {"price": None, "source": "missing"})
         price = price_row.get("price")
         price_source = price_row.get("source")
+        used_fallback = 1 if (price_source or "").lower() == "yfinance" else 0
+        missing_price = 1 if price is None else 0
         oced_row = db.get_latest_oced_row(ticker)
         ml_row = ml_latest.get(ticker.upper()) or db.get_latest_stock_ml(ticker)
         bar_count = db.price_bar_count(ticker)
@@ -349,24 +354,34 @@ def run_weekly_picker(
         lane = _resolve_lane(oced_row)
         if lane == "AGGRESSIVE":
             lane = _lane_from_ann_vol(oced_row.get("ann_vol") if oced_row else None, categories.get(ticker))
-        pack_cost = price * 100.0 if price is not None else None
+        pack_cost = round(price * 100.0, 2) if price is not None else None
 
         exp_move = _expected_move(price, ml_row, oced_row)
         target_strike = select_strike(price, exp_move, lane=lane)
+        chain_quotes, chain_source = get_option_chain(ticker, expiry, db_path=db_path, return_source=True)
         picked, premium_status = _select_chain_option(
             ticker=ticker,
             price=price,
             lane=lane,
             expiry=expiry,
             target_strike=target_strike,
+            quotes=chain_quotes,
         )
+        chain_bid = picked.get("bid") if picked else None
+        chain_ask = picked.get("ask") if picked else None
+        chain_mid = picked.get("mid") if picked else None
         if picked:
             prem_est = picked.get("prem_100")
             prem_yield = picked.get("prem_yield")
             target_strike = picked.get("strike")
             premium_status = "ok"
+            prem_source = picked.get("prem_source") or "chain_mid"
+            strike_source = "computed_from_chain"
         else:
             premium_status = premium_status or "missing_option_chain"
+            prem_source = "missing_chain"
+            strike_source = "missing_chain"
+            target_strike = None
 
         base_score = _final_rank_score(prem_yield, oced_row)
         final_score = base_score + _ml_rank_adjust(
@@ -380,6 +395,8 @@ def run_weekly_picker(
         else:
             fft_status = hist_status
             fractal_status = hist_status
+
+        bars_1m_source = "price_bars_1m" if bar_count and bar_count > 0 else "missing"
 
         pick = {
             "ts": ts,
@@ -402,7 +419,17 @@ def run_weekly_picker(
             "recommended_premium_100": prem_est if picked else None,
             "bars_1m_count": bar_count,
             "price_source": price_source,
+            "chain_source": chain_source or "missing_chain",
+            "prem_source": prem_source,
+            "strike_source": strike_source,
+            "bars_1m_source": bars_1m_source,
             "premium_status": premium_status,
+            "used_fallback": used_fallback,
+            "missing_price": missing_price,
+            "missing_chain": 1 if not chain_quotes else 0,
+            "chain_bid": chain_bid,
+            "chain_ask": chain_ask,
+            "chain_mid": chain_mid,
         }
         picks.append(pick)
 
@@ -411,6 +438,7 @@ def run_weekly_picker(
 
     for idx, pick in enumerate(picks, start=1):
         pick["rank"] = idx
+        pick.pop("premium_status", None)
         db.upsert_weekly_pick(**pick)
 
     return picks

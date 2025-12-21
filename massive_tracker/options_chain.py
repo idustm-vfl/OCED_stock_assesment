@@ -90,21 +90,33 @@ def get_option_chain(
     db_path: str = DEFAULT_DB_PATH,
     max_age_minutes: int = 60,
     use_cache: bool = True,
-) -> List[dict]:
-    """Fetch option chain quotes for ticker/expiry with sqlite caching."""
+    return_source: bool = False,
+) -> List[dict] | tuple[List[dict], str]:
+    """Fetch option chain quotes for ticker/expiry with sqlite caching.
+
+    When return_source=True, returns (quotes, source_tag).
+    """
 
     db = DB(db_path)
+    source = "missing_chain"
     if use_cache:
         cached = db.get_option_chain(ticker=ticker, expiry=expiry, max_age_minutes=max_age_minutes)
         if cached:
-            return cached
+            source = "cache_chain_snapshot"
+            return (cached, source) if return_source else cached
 
     quotes = _fetch_from_massive(ticker, expiry)
-    if not quotes:
+    if quotes:
+        source = "massive_rest_chain_snapshot"
+    else:
         quotes = _fetch_from_flatfiles(ticker, expiry)
+        if quotes:
+            source = "flatfile_chain_bootstrap"
+
     if quotes:
         db.upsert_option_chain_rows(ticker=ticker, expiry=expiry, rows=quotes, ts=_now_ts())
-    return quotes
+
+    return (quotes, source) if return_source else quotes
 
 
 # Backwards compatibility alias for existing callers.

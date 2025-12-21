@@ -219,6 +219,7 @@ CREATE TABLE IF NOT EXISTS option_chains (
     mid REAL,
     oi REAL,
     iv REAL,
+    vol REAL,
     ts TEXT NOT NULL,
     PRIMARY KEY (ticker, expiry, strike)
 );
@@ -261,6 +262,7 @@ class DB:
         self._ensure_option_bar_tables(con)
         self._ensure_universe_table(con)
         self._ensure_promotions_table(con)
+        self._ensure_option_chain_columns(con)
 
     def _ensure_option_position_columns(self, con: sqlite3.Connection) -> None:
         rows = con.execute("PRAGMA table_info(option_positions)").fetchall()
@@ -299,6 +301,28 @@ class DB:
             con.execute("ALTER TABLE weekly_picks ADD COLUMN bars_1m_count INTEGER")
         if "price_source" not in existing_cols:
             con.execute("ALTER TABLE weekly_picks ADD COLUMN price_source TEXT")
+        if "chain_source" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN chain_source TEXT")
+        if "prem_source" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN prem_source TEXT")
+        if "strike_source" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN strike_source TEXT")
+        if "bars_1m_source" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN bars_1m_source TEXT")
+        if "premium_status" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN premium_status TEXT")
+        if "used_fallback" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN used_fallback INTEGER")
+        if "missing_price" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN missing_price INTEGER")
+        if "missing_chain" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN missing_chain INTEGER")
+        if "chain_bid" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN chain_bid REAL")
+        if "chain_ask" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN chain_ask REAL")
+        if "chain_mid" not in existing_cols:
+            con.execute("ALTER TABLE weekly_picks ADD COLUMN chain_mid REAL")
 
     def _ensure_option_bar_tables(self, con: sqlite3.Connection) -> None:
         con.execute(
@@ -320,6 +344,14 @@ class DB:
             )
             """
         )
+
+    def _ensure_option_chain_columns(self, con: sqlite3.Connection) -> None:
+        rows = con.execute("PRAGMA table_info(option_chains)").fetchall()
+        existing_cols = {row[1] for row in rows}
+        if not existing_cols:
+            return
+        if "vol" not in existing_cols:
+            con.execute("ALTER TABLE option_chains ADD COLUMN vol REAL")
 
     def _ensure_universe_table(self, con: sqlite3.Connection) -> None:
         con.execute(
@@ -489,14 +521,25 @@ class DB:
         recommended_premium_100: float | None,
         bars_1m_count: int | None,
         price_source: str | None,
+        chain_source: str | None,
+        prem_source: str | None,
+        strike_source: str | None,
+        bars_1m_source: str | None,
+        premium_status: str | None,
+        used_fallback: int | None,
+        missing_price: int | None,
+        missing_chain: int | None,
+        chain_bid: float | None,
+        chain_ask: float | None,
+        chain_mid: float | None,
     ) -> None:
         ticker = ticker.upper().strip()
         with self.connect() as con:
             con.execute(
                 """
                 INSERT OR REPLACE INTO weekly_picks
-                (ts, ticker, category, lane, rank, score, price, pack_100_cost, est_weekly_prem_100, prem_yield_weekly, safest_flag, fft_status, fractal_status, source, final_rank_score, recommended_expiry, recommended_strike, recommended_premium_100, bars_1m_count, price_source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (ts, ticker, category, lane, rank, score, price, pack_100_cost, est_weekly_prem_100, prem_yield_weekly, safest_flag, fft_status, fractal_status, source, final_rank_score, recommended_expiry, recommended_strike, recommended_premium_100, bars_1m_count, price_source, chain_source, prem_source, strike_source, bars_1m_source, premium_status, used_fallback, missing_price, missing_chain, chain_bid, chain_ask, chain_mid)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ts,
@@ -519,6 +562,17 @@ class DB:
                     recommended_premium_100,
                     bars_1m_count,
                     price_source,
+                    chain_source,
+                    prem_source,
+                    strike_source,
+                    bars_1m_source,
+                    premium_status,
+                    used_fallback,
+                    missing_price,
+                    missing_chain,
+                    chain_bid,
+                    chain_ask,
+                    chain_mid,
                 ),
             )
 
@@ -532,7 +586,8 @@ class DB:
                 """
                   SELECT ts, ticker, lane, rank, score, price, pack_100_cost, est_weekly_prem_100,
                       prem_yield_weekly, safest_flag, fft_status, fractal_status, source, final_rank_score,
-                      recommended_expiry, recommended_strike, recommended_premium_100, category, bars_1m_count, price_source
+                      recommended_expiry, recommended_strike, recommended_premium_100, category, bars_1m_count, price_source,
+                      chain_source, prem_source, strike_source, bars_1m_source, premium_status, used_fallback, missing_price, missing_chain, chain_bid, chain_ask, chain_mid
                 FROM weekly_picks
                 WHERE ts = ?
                 ORDER BY rank ASC
@@ -564,6 +619,17 @@ class DB:
                     "category": r[17],
                     "bars_1m_count": r[18],
                     "price_source": r[19],
+                    "chain_source": r[20],
+                    "prem_source": r[21],
+                    "strike_source": r[22],
+                    "bars_1m_source": r[23],
+                    "premium_status": r[24],
+                    "used_fallback": r[25],
+                    "missing_price": r[26],
+                    "missing_chain": r[27],
+                    "chain_bid": r[28],
+                    "chain_ask": r[29],
+                    "chain_mid": r[30],
                 }
             )
         return out
@@ -761,7 +827,8 @@ class DB:
 
         missing = [t for t in up if t not in prices]
         yf_prices: dict[str, tuple[float, str]] = {}
-        allow_yf = os.getenv("VFL_ALLOW_YFINANCE_FALLBACK", "0").lower() in {"1", "true", "yes"}
+        allow_yf_env = os.getenv("ALLOW_YFINANCE_FALLBACK", os.getenv("VFL_ALLOW_YFINANCE_FALLBACK", "0"))
+        allow_yf = str(allow_yf_env).lower() in {"1", "true", "yes"}
         if missing and allow_yf:
             try:
                 import yfinance as yf  # type: ignore
@@ -803,14 +870,15 @@ class DB:
             mid = r.get("mid")
             oi = r.get("oi")
             iv = r.get("iv")
-            clean_rows.append((ticker, expiry, strike, bid, ask, mid, oi, iv, ts))
+            vol = r.get("vol")
+            clean_rows.append((ticker, expiry, strike, bid, ask, mid, oi, iv, vol, ts))
         if not clean_rows:
             return
         with self.connect() as con:
             con.executemany(
                 """
-                INSERT OR REPLACE INTO option_chains(ticker, expiry, strike, bid, ask, mid, oi, iv, ts)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO option_chains(ticker, expiry, strike, bid, ask, mid, oi, iv, vol, ts)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 clean_rows,
             )
@@ -822,7 +890,7 @@ class DB:
         with self.connect() as con:
             rows = con.execute(
                 """
-                SELECT strike, bid, ask, mid, oi, iv, ts
+                SELECT strike, bid, ask, mid, oi, iv, vol, ts
                 FROM option_chains
                 WHERE ticker=? AND expiry=? AND ts >= datetime('now', ?)
                 ORDER BY strike ASC
@@ -839,7 +907,8 @@ class DB:
                     "mid": r[3],
                     "oi": r[4],
                     "iv": r[5],
-                    "ts": r[6],
+                    "vol": r[6],
+                    "ts": r[7],
                 }
             )
         return out

@@ -181,20 +181,21 @@ def write_summary(db_path: str = "data/sqlite/tracker.db", seed: float = 9300.0)
                 table_rows.append([
                     r.get("ticker", ""),
                     r.get("category", "") or "",
-                    _fmt(r.get("price")),
+                    f"{_fmt(r.get('price'))} ({r.get('price_source') or 'missing'})",
                     _fmt(r.get("pack_100_cost")),
                     r.get("lane", ""),
                     r.get("recommended_expiry", ""),
                     _fmt(r.get("recommended_strike")),
                     _fmt(r.get("est_weekly_prem_100")),
                     _fmt(r.get("prem_yield_weekly")),
+                    r.get("chain_source", ""),
+                    r.get("prem_source", ""),
                     str(r.get("bars_1m_count") or ""),
-                    r.get("fft_status", ""),
-                    r.get("fractal_status", ""),
+                    r.get("bars_1m_source", ""),
                     _fmt(r.get("final_rank_score")),
                 ])
             lines.extend(_table(
-                ["ticker", "category", "price", "pack_100_cost", "lane", "expiry", "strike", "prem_100", "prem_yield", "bars_1m", "fft", "fractal", "rank_score"],
+                ["ticker", "category", "price (source)", "pack_100_cost", "lane", "expiry", "strike", "prem_100", "prem_yield", "chain_source", "prem_source", "bars_1m", "bars_source", "rank_score"],
                 table_rows,
             ))
             lines.append("")

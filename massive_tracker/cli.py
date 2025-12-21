@@ -1,4 +1,5 @@
 import sys
+import os
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -305,6 +306,188 @@ def picker(db_path: str = "data/sqlite/tracker.db", top_n: int = 5):
     sync_universe(DB(db_path))
     picks = run_weekly_picker(db_path=db_path, top_n=top_n)
     print(f"[green]Wrote picks[/green] to weekly_picks ({len(picks)} rows)")
+
+
+@app.command()
+def chain_fetch(db_path: str = "data/sqlite/tracker.db", expiry: str = "", top_n: int = 0):
+    """Fetch option chain snapshots for enabled tickers and cache to sqlite."""
+    from massive_tracker.options_chain import get_option_chain
+
+    db = DB(db_path)
+    sync_universe(db)
+    tickers = [t for t, _ in db.list_universe(enabled_only=True)]
+    if top_n:
+        tickers = tickers[:top_n]
+    if not expiry:
+        from datetime import datetime, timedelta
+
+        days_ahead = (4 - datetime.utcnow().weekday()) % 7
+        expiry = (datetime.utcnow() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+
+    fetched = 0
+    for t in tickers:
+        quotes, source = get_option_chain(t, expiry, db_path=db_path, return_source=True, use_cache=False)
+        fetched += 1 if quotes else 0
+        print(f"{t} expiry={expiry} chain_source={source} rows={len(quotes)}")
+    print(f"[green]Chain fetch complete[/green]: tickers={len(tickers)} expiry={expiry} cached_rows={fetched}")
+
+
+@app.command()
+def audit(
+    db_path: str = "data/sqlite/tracker.db",
+    expiry: str = "",
+    top: int = 15,
+):
+    """Audit weekly pick math, provenance, and fallback usage."""
+    from pathlib import Path
+    import csv
+    from massive_tracker.store import DB
+
+    REPORT_DIR = Path("data/reports")
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    audit_sources_path = REPORT_DIR / "audit_sources.csv"
+    audit_math_path = REPORT_DIR / "audit_math.csv"
+    audit_md_path = REPORT_DIR / "audit_math.md"
+
+    db = DB(db_path)
+    picks = db.fetch_latest_weekly_picks()
+    if expiry:
+        picks = [p for p in picks if (p.get("recommended_expiry") == expiry or p.get("recommended_expiry") is None)]
+    if top:
+        picks = picks[:top]
+
+    def safe_round(val, nd=2):
+        try:
+            return round(float(val), nd)
+        except Exception:
+            return None
+
+    source_rows = []
+    math_rows = []
+    fallback_disabled = str(os.getenv("ALLOW_YFINANCE_FALLBACK", os.getenv("VFL_ALLOW_YFINANCE_FALLBACK", "0"))).lower() not in {"1", "true", "yes"}
+    math_failures = 0
+    missing_chain = 0
+    used_fallback_count = 0
+
+    for p in picks:
+        price = p.get("price")
+        price_source = p.get("price_source") or "missing"
+        chain_mid = p.get("chain_mid")
+        prem_reported = p.get("est_weekly_prem_100")
+        prem_yield_reported = p.get("prem_yield_weekly")
+        pack_reported = p.get("pack_100_cost")
+
+        pack_calc = safe_round(float(price) * 100.0, 2) if price is not None else None
+        prem_calc = safe_round(float(chain_mid) * 100.0, 2) if chain_mid is not None else None
+        prem_yield_calc = None
+        if prem_calc is not None and pack_calc not in (None, 0):
+            try:
+                prem_yield_calc = prem_calc / pack_calc
+            except Exception:
+                prem_yield_calc = None
+
+        diff_pack = None if pack_calc is None or pack_reported is None else safe_round(pack_calc - float(pack_reported), 6)
+        diff_prem = None if prem_calc is None or prem_reported is None else safe_round(prem_calc - float(prem_reported), 6)
+        diff_yield = None
+        if prem_yield_calc is not None and prem_yield_reported is not None:
+            try:
+                diff_yield = round(float(prem_yield_calc) - float(prem_yield_reported), 8)
+            except Exception:
+                diff_yield = None
+
+        def within(val, tol):
+            return val is None or abs(val) <= tol
+
+        pass_fail = "PASS" if within(diff_pack, 0.05) and within(diff_prem, 0.05) and within(diff_yield, 1e-4) else "FAIL"
+        if pass_fail == "FAIL":
+            math_failures += 1
+
+        chain_source = p.get("chain_source") or "missing_chain"
+        prem_source = p.get("prem_source") or "missing_chain"
+        strike_source = p.get("strike_source") or "missing_chain"
+        bars_source = p.get("bars_1m_source") or "missing"
+        missing_chain_flag = 1 if chain_source.startswith("missing") or chain_mid is None else 0
+        missing_chain += missing_chain_flag
+        used_fallback = 1 if price_source == "yfinance" else 0
+        used_fallback_count += used_fallback
+
+        source_rows.append(
+            {
+                "ts": p.get("ts"),
+                "ticker": p.get("ticker"),
+                "category": p.get("category"),
+                "lane": p.get("lane"),
+                "expiry": p.get("recommended_expiry"),
+                "price": price,
+                "price_source": price_source,
+                "bid": p.get("chain_bid"),
+                "ask": p.get("chain_ask"),
+                "mid": chain_mid,
+                "prem_source": prem_source,
+                "strike": p.get("recommended_strike"),
+                "strike_source": strike_source,
+                "prem_100": prem_reported,
+                "prem_yield": prem_yield_reported,
+                "chain_source": chain_source,
+                "bars_1m_count": p.get("bars_1m_count"),
+                "bars_1m_source": bars_source,
+                "missing_price": 1 if price is None else 0,
+                "missing_chain": missing_chain_flag,
+                "used_fallback": used_fallback,
+            }
+        )
+
+        math_rows.append(
+            {
+                "ticker": p.get("ticker"),
+                "pack_100_cost_calc": pack_calc,
+                "pack_100_cost_reported": pack_reported,
+                "diff_pack": diff_pack,
+                "prem_100_calc": prem_calc,
+                "prem_100_reported": prem_reported,
+                "diff_prem": diff_prem,
+                "prem_yield_calc": prem_yield_calc,
+                "prem_yield_reported": prem_yield_reported,
+                "diff_yield": diff_yield,
+                "pass_fail": pass_fail,
+            }
+        )
+
+    # Write CSVs
+    with audit_sources_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(source_rows[0].keys()) if source_rows else [])
+        if source_rows:
+            writer.writeheader()
+            writer.writerows(source_rows)
+
+    with audit_math_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(math_rows[0].keys()) if math_rows else [])
+        if math_rows:
+            writer.writeheader()
+            writer.writerows(math_rows)
+
+    total_rows = len(source_rows)
+    md_lines = ["# Audit Math Report", ""]
+    md_lines.append(f"Rows checked: {total_rows}")
+    md_lines.append(f"Rows using fallback: {used_fallback_count}")
+    md_lines.append(f"Rows missing chain: {missing_chain}")
+    md_lines.append(f"Rows failing math checks: {math_failures}")
+    md_lines.append("")
+
+    # Top failures
+    fails = [r for r in math_rows if r.get("pass_fail") == "FAIL"]
+    if fails:
+        md_lines.append("## Top Math Failures")
+        for r in fails[:10]:
+            md_lines.append(
+                f"- {r['ticker']}: diff_pack={r.get('diff_pack')} diff_prem={r.get('diff_prem')} diff_yield={r.get('diff_yield')}"
+            )
+    else:
+        md_lines.append("No math failures detected.")
+
+    audit_md_path.write_text("\n".join(md_lines), encoding="utf-8")
+
+    print(f"[green]Audit written[/green]: {audit_sources_path}, {audit_math_path}, {audit_md_path}")
 
 
 @app.command()
