@@ -148,6 +148,44 @@ def get_stock_last_quote(ticker: str) -> tuple[float | None, str | None, str]:
     return get_stock_last_price(ticker)
 
 
+def get_option_last_quote(option_contract: str) -> tuple[float | None, str | None, str]:
+    """Return (mid, ts, source) for an option contract via REST list_quotes (options-only friendly)."""
+    token = _api_token()
+    if rest is None or not token:
+        return None, None, "massive_rest:option_quote"
+
+    try:
+        quotes = rest.list_quotes(option_contract, limit=1)
+    except Exception:
+        return None, None, "massive_rest:option_quote"
+
+    try:
+        first = next(iter(quotes))
+    except Exception:
+        first = None
+
+    if not first:
+        return None, None, "massive_rest:option_quote"
+
+    bid = getattr(first, "bid_price", None)
+    ask = getattr(first, "ask_price", None)
+    mid = None
+    if bid is not None and ask is not None:
+        try:
+            mid = (float(bid) + float(ask)) / 2.0
+        except Exception:
+            mid = None
+
+    ts = getattr(first, "sip_timestamp", None) or getattr(first, "participant_timestamp", None)
+    if ts:
+        try:
+            ts = _ts_from_ns(ts)
+        except Exception:
+            pass
+
+    return mid, ts, "massive_rest:option_quote"
+
+
 def get_option_chain_snapshot(
     underlying: str,
     expiration: str,

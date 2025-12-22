@@ -1232,24 +1232,12 @@ class DB:
             ).fetchall()
         prices = {r[0].upper(): (r[1], r[2], r[3]) for r in rows}
 
-        from .massive_client import get_stock_last_price
-
-        missing = [t for t in up if t not in prices]
-        massive_prices: dict[str, tuple[float, str, str]] = {}
-        if missing:
-            for t in missing:
-                price, ts_val, source = get_stock_last_price(t)
-                if price is not None:
-                    massive_prices[t] = (price, ts_val or "", source)
-
         for t in up:
             if t in prices:
                 price, ts_val, source = prices[t]
                 out.append({"ticker": t, "price": price, "ts": ts_val, "source": source or "cache_market_last"})
-            elif t in massive_prices:
-                price, ts_val, source = massive_prices[t]
-                out.append({"ticker": t, "price": price, "ts": ts_val, "source": source})
             else:
+                # REST stock endpoints may be unavailable; rely on websocket/cache only
                 out.append({"ticker": t, "price": None, "ts": None, "source": "missing"})
         return out
 
