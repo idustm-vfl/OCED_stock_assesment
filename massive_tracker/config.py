@@ -34,11 +34,10 @@ def _first_env(*names: str) -> str | None:
             return val
     return None
 
-
-def _mask(val: str | None) -> str:
-    if not val:
+def _mask(k: str | None) -> str:
+    if not k:
         return "None"
-    return val[:5] + "*****"
+    return k[:5] + "*****"
 
 
 def load_runtime_config() -> RuntimeConfig:
@@ -47,6 +46,15 @@ def load_runtime_config() -> RuntimeConfig:
         raise RuntimeError("Missing MASSIVE_API_KEY in Codespaces secrets")
 
     if os.getenv("VFL_DEBUG_CONFIG", "").strip().lower() in {"1", "true", "yes"}:
+        print(
+            "Runtime env presence: "
+            f"MASSIVE_API_KEY={bool(os.getenv('MASSIVE_API_KEY'))} "
+            f"MASSIVE_ACCESS_KEY={bool(os.getenv('MASSIVE_ACCESS_KEY'))} "
+            f"MASSIVE_SECRET_KEY={bool(os.getenv('MASSIVE_SECRET_KEY'))} "
+            f"MASSIVE_S3_ENDPOINT={bool(os.getenv('MASSIVE_S3_ENDPOINT'))} "
+            f"MASSIVE_S3_BUCKET={bool(os.getenv('MASSIVE_S3_BUCKET'))}"
+        )
+    if os.getenv("VFL_DEBUG_CONFIG") == "1":
         print(f"[CONFIG] MASSIVE_API_KEY: {_mask(os.getenv('MASSIVE_API_KEY'))}")
         print(f"[CONFIG] MASSIVE_ACCESS_KEY: {_mask(os.getenv('MASSIVE_ACCESS_KEY'))}")
         print(f"[CONFIG] MASSIVE_SECRET_KEY: {_mask(os.getenv('MASSIVE_SECRET_KEY'))}")
