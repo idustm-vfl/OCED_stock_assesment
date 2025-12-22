@@ -27,6 +27,7 @@ from .massive_rest import MassiveREST
 from .massive_client import get_stock_last_price, get_option_chain_snapshot
 from .universe import sync_universe, get_universe
 from .summary import write_summary
+from .covered_calls import rank_covered_calls, next_fridays, load_spot_map, save_results
 from .report_monday import write_monday_report
 from .weekly_close import write_weekly_scorecard
 from .compare_models import run_compare
@@ -155,6 +156,28 @@ def add_contract(
     wl = Watchlists(DB(db_path))
     wl.add_contract(ticker, expiry, right, strike, qty)
     print(f"[green]Added contract[/green] {ticker.upper()} {expiry} {right.upper()} {strike} x{qty}")
+
+
+@app.command()
+def pick_covered_calls(
+    tickers: str = "",
+    expiries: str = "",
+    top_n: int = 5,
+    db_path: str = "data/sqlite/tracker.db",
+):
+    """Rank near-term covered-call candidates across the universe."""
+
+    universe = get_universe()
+    tlist = [t.strip().upper() for t in tickers.split(",") if t.strip()] if tickers else universe
+    elist = [e.strip() for e in expiries.split(",") if e.strip()] if expiries else next_fridays(2)
+
+    spot_map = load_spot_map(db_path, tlist)
+    payload = rank_covered_calls(tlist, elist, spot_map=spot_map, top_n_per_ticker=top_n)
+    path = save_results(payload)
+
+    write_summary(db_path)
+
+    print(f"[green]Covered-call results written[/green] {path} (tickers={len(tlist)} expiries={elist})")
 
 
 @app.command()

@@ -13,6 +13,7 @@ REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 SUMMARY_PATH = REPORT_DIR / "summary.md"
 MODEL_COMPARE_PATH = REPORT_DIR / "model_compare.json"
+COVERED_CALLS_PATH = REPORT_DIR / "covered_calls.json"
 
 
 BUCKETS = [
@@ -59,6 +60,15 @@ def _load_compare() -> dict | None:
     if MODEL_COMPARE_PATH.exists():
         try:
             return json.loads(MODEL_COMPARE_PATH.read_text())
+        except Exception:
+            return None
+    return None
+
+
+def _load_covered_calls() -> dict | None:
+    if COVERED_CALLS_PATH.exists():
+        try:
+            return json.loads(COVERED_CALLS_PATH.read_text())
         except Exception:
             return None
     return None
@@ -367,6 +377,60 @@ def write_summary(db_path: str = "data/sqlite/tracker.db", seed: float = 9300.0)
                 feat.get("snapshot_status") if feat else "",
             ])
         lines.extend(_table(["ticker", "expiry", "leg", "qty", "stock", "mid", "bid", "ask", "rec", "status"], rows_out))
+    lines.append("")
+
+    # Covered-call candidates (latest run)
+    cc = _load_covered_calls()
+    lines.append("## Covered-Call Candidates")
+    if not cc:
+        lines.append("_Run `python -m massive_tracker.cli pick-covered-calls` to populate._")
+    else:
+        lines.append(f"Generated: {cc.get('generated', 'unknown')}")
+        expiries = cc.get("expirations") or []
+        if expiries:
+            lines.append("Expirations: " + ", ".join(expiries))
+        candidates = cc.get("candidates") or []
+        if not candidates:
+            lines.append("_No candidates in latest run._")
+        else:
+            top = sorted(candidates, key=lambda r: r.get("score") or 0.0, reverse=True)[:10]
+            rows = []
+            for r in top:
+                rows.append(
+                    [
+                        r.get("ticker"),
+                        r.get("expiry"),
+                        _fmt(r.get("strike")),
+                        _fmt(r.get("mid")),
+                        _fmt(r.get("bid")),
+                        _fmt(r.get("ask")),
+                        _fmt(r.get("delta")),
+                        _fmt(r.get("iv")),
+                        _fmt(r.get("oi")),
+                        _fmt(r.get("prem_yield")),
+                        _fmt(r.get("spread_pct")),
+                        _fmt(r.get("spot_used")),
+                    ]
+                )
+            lines.extend(
+                _table(
+                    [
+                        "ticker",
+                        "expiry",
+                        "strike",
+                        "mid",
+                        "bid",
+                        "ask",
+                        "delta",
+                        "iv",
+                        "oi",
+                        "yield",
+                        "spread%",
+                        "spot",
+                    ],
+                    rows,
+                )
+            )
     lines.append("")
 
     # Side-by-side compare
