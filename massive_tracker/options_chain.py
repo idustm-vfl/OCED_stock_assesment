@@ -63,11 +63,31 @@ def _fetch_from_massive(ticker: str, expiry: str) -> List[dict]:
     return out
 
 
-def _fetch_from_flatfiles(ticker: str, expiry: str) -> List[dict]:
+def _latest_option_date(db: DB, ticker: str, expiry: str) -> str | None:
+    ticker = ticker.upper().strip()
+    expiry = expiry.strip()
+    with db.connect() as con:
+        row = con.execute(
+            "SELECT MAX(ts) FROM option_bars_1d WHERE ticker=? AND expiry=?",
+            (ticker, expiry),
+        ).fetchone()
+        if row and row[0]:
+            return row[0]
+        row = con.execute(
+            "SELECT MAX(substr(ts, 1, 10)) FROM option_bars_1m WHERE ticker=? AND expiry=?",
+            (ticker, expiry),
+        ).fetchone()
+        if row and row[0]:
+            return row[0]
+    return None
+
+
+def _fetch_from_flatfiles(ticker: str, expiry: str, db_path: str) -> List[dict]:
     """Bootstrap chain from flatfile strike candidates (approx)."""
     try:
-        latest_day = datetime.utcnow().strftime("%Y-%m-%d")
-        bars = build_strike_candidates(ticker, expiry, latest_day)
+        db = DB(db_path)
+        latest_day = _latest_option_date(db, ticker, expiry) or datetime.utcnow().strftime("%Y-%m-%d")
+        bars = build_strike_candidates(ticker, expiry, latest_day, db_path=db_path)
     except Exception:
         return []
     out: List[dict] = []
@@ -116,7 +136,7 @@ def get_option_chain(
     if quotes:
         source = "massive_rest:option_chain_snapshot"
     else:
-        quotes = _fetch_from_flatfiles(ticker, expiry)
+        quotes = _fetch_from_flatfiles(ticker, expiry, db_path)
         if quotes:
             source = "flatfile:chain_bootstrap"
 

@@ -100,10 +100,10 @@ class MassiveWSClient:
         ws_url: Optional[str] = None,
         market_cache_db_path: Optional[str] = None,
     ):
-        self.api_key = api_key or CFG.massive_api_key
+        self.api_key = api_key or CFG.massive_key_id or CFG.massive_api_key
         if not self.api_key:
             raise RuntimeError(
-                "MASSIVE_API_KEY not set. "
+                "MASSIVE_KEY_ID not set. "
                 "Set it in your environment or pass api_key= parameter."
             )
         key_mask = (self.api_key or "None")[:5] + "*****"

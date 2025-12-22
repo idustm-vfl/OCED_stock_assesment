@@ -152,7 +152,8 @@ def write_summary(db_path: str = "data/sqlite/tracker.db", seed: float = 9300.0)
         return val[:5] + "*****"
 
     lines.append("Runtime credentials:")
-    lines.append(f"- MASSIVE_API_KEY: {_mask(os.getenv('MASSIVE_API_KEY'))}")
+    lines.append(f"- MASSIVE_ACCESS_KEY: {_mask(os.getenv('MASSIVE_ACCESS_KEY'))}")
+    lines.append(f"- MASSIVE_KEY_ID: {_mask(os.getenv('MASSIVE_KEY_ID'))}")
     lines.append("")
 
     price_sources = sorted({str(p.get("price_source") or "") for p in picks if p.get("price_source")})

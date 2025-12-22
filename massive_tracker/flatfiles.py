@@ -177,14 +177,14 @@ def load_option_file(path: Path, db_path: str, table: str, ts_hint: Optional[str
     if df.empty:
         return 0
 
-    contract_col = _pick_column(df, ["symbol", "contract", "sym"])
+    contract_col = _pick_column(df, ["symbol", "contract", "sym", "ticker"])
     o_col = _pick_column(df, ["o", "open"])
     h_col = _pick_column(df, ["h", "high"])
     l_col = _pick_column(df, ["l", "low"])
     c_col = _pick_column(df, ["c", "close"])
     v_col = _pick_column(df, ["v", "volume"])
     n_col = _pick_column(df, ["n", "transactions", "trade_count"])
-    ts_col = _pick_column(df, ["t", "ts", "timestamp", "time"])
+    ts_col = _pick_column(df, ["t", "ts", "timestamp", "time", "window_start"])
 
     rows: List[tuple] = []
     for _, row in df.iterrows():
@@ -216,6 +216,51 @@ def load_option_file(path: Path, db_path: str, table: str, ts_hint: Optional[str
     db = DB(db_path)
     db.insert_option_bars(table, rows)
     return len(rows)
+
+
+def load_stock_file(
+    path: Path,
+    db_path: str,
+    *,
+    ts_hint: Optional[str] = None,
+    tickers: Optional[List[str]] = None,
+    source: str = "flatfile:stocks_day_aggs",
+) -> int:
+    df_iter = pd.read_csv(path, chunksize=200_000)
+    db = DB(db_path)
+    wanted = {t.upper().strip() for t in tickers or [] if t}
+    total = 0
+
+    for chunk in df_iter:
+        if chunk.empty:
+            continue
+        symbol_col = _pick_column(chunk, ["ticker", "symbol", "sym"])
+        close_col = _pick_column(chunk, ["c", "close"])
+        ts_col = _pick_column(chunk, ["t", "ts", "timestamp", "time"])
+        if not symbol_col or not close_col:
+            continue
+
+        if wanted:
+            series = chunk[symbol_col].astype(str).str.upper()
+            chunk = chunk[series.isin(wanted)]
+            if chunk.empty:
+                continue
+
+        for _, row in chunk.iterrows():
+            symbol = str(row.get(symbol_col) or "").upper().strip()
+            if not symbol:
+                continue
+            try:
+                close_val = float(row.get(close_col))
+            except Exception:
+                continue
+            ts_val = _row_ts(row, ts_col, ts_hint) or ts_hint
+            if not ts_val:
+                continue
+            db.set_market_last(symbol, ts_val, close_val, source=source)
+            total += 1
+
+    return total
 
 
 # --------------------

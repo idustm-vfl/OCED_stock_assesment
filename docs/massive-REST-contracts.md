@@ -64,7 +64,7 @@ Use Cases: Market availability analysis, strategy development, research and mode
 
 ## Flatfile download example (S3)
 
-Use the Massive flatfile credentials, not the REST/WebSocket `MASSIVE_API_KEY`:
+Use the Massive flatfile credentials, not the REST/WebSocket `MASSIVE_ACCESS_KEY`:
 
 ```python
 import os

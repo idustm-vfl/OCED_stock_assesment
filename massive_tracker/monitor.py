@@ -120,7 +120,7 @@ def _massive_rest_config() -> Optional[MassiveRestConfig]:
     Set ONE of these patterns:
 
       MASSIVE_REST_BASE=https://api.massive.com   (example)
-      MASSIVE_API_KEY=...
+      MASSIVE_ACCESS_KEY=...
 
     If not set, this provider is skipped.
     """

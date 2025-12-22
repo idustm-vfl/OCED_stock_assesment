@@ -512,15 +512,16 @@ def run_weekly_picker(
         option_source = _option_source_tag(chain_source, chain_quotes)
 
         if chain_source and str(chain_source).startswith("flatfile:"):
-            db.log_weekly_pick_missing(
-                ts=ts,
-                ticker=ticker,
-                stage="chain",
-                reason="flatfile_fallback_disabled",
-                detail="massive_chain_required",
-                source=chain_source,
-            )
-            continue
+            if not _truthy(os.getenv("VFL_ALLOW_FLATFILE_CHAIN", "0")):
+                db.log_weekly_pick_missing(
+                    ts=ts,
+                    ticker=ticker,
+                    stage="chain",
+                    reason="flatfile_fallback_disabled",
+                    detail="massive_chain_required",
+                    source=chain_source,
+                )
+                continue
 
         picked, premium_status = _select_chain_option(
             ticker=ticker,

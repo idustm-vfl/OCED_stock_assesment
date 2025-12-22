@@ -89,9 +89,9 @@ def handle_msgs(db: DB, msgs: List[WebSocketMessage]):
 def main():
     db = DB(DB_PATH)
 
-    api_key = CFG.massive_api_key
+    api_key = CFG.massive_key_id or CFG.massive_api_key
     if not api_key:
-        raise RuntimeError("Missing WebSocket API key. Set MASSIVE_API_KEY in environment.")
+        raise RuntimeError("Missing WebSocket key id. Set MASSIVE_KEY_ID in environment.")
 
     sys.exit(1)
 

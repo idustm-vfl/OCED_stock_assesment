@@ -18,15 +18,21 @@ def _mask(val: str | None) -> str:
     return val[:5] + "*****"
 
 
+def _api_token() -> str | None:
+    # Prefer ACCESS_KEY; fallback to KEY_ID if provided
+    return CFG.massive_api_key or (CFG.massive_key_id or None)
+
+
 def _init_client():
-    if RESTClient is None or not CFG.massive_api_key:
+    token = _api_token()
+    if RESTClient is None or not token:
         return None
     try:
-        print(f"[MASSIVE REST] using API key: {_mask(CFG.massive_api_key)}")
-        return RESTClient(api_key=CFG.massive_api_key)  # type: ignore[call-arg]
+        print(f"[MASSIVE REST] using API key: {_mask(token)}")
+        return RESTClient(api_key=token)  # type: ignore[call-arg]
     except TypeError:
-        print(f"[MASSIVE REST] using API key: {_mask(CFG.massive_api_key)}")
-        return RESTClient(CFG.massive_api_key)  # type: ignore[call-arg]
+        print(f"[MASSIVE REST] using API key: {_mask(token)}")
+        return RESTClient(token)  # type: ignore[call-arg]
 
 
 def _utc_now() -> str:
@@ -52,8 +58,9 @@ def _ts_from_ns(val: Any) -> str | None:
 
 def _sdk_get(path: str, params: dict | None = None) -> dict:
     if rest is None:
-        raise RuntimeError("Massive REST client unavailable. Install `massive` and set MASSIVE_API_KEY.")
-    print(f"[MASSIVE REST] endpoint={path} key={_mask(CFG.massive_api_key)}")
+        raise RuntimeError("Massive REST client unavailable. Install `massive` and set MASSIVE_ACCESS_KEY/MASSIVE_KEY_ID.")
+    token = _api_token()
+    print(f"[MASSIVE REST] endpoint={path} key={_mask(token)}")
     for name in ("get", "_get"):
         fn = getattr(rest, name, None)
         if callable(fn):
@@ -96,13 +103,14 @@ def _extract_price_from_stock_snapshot(result: dict) -> tuple[float | None, str 
 
 def get_stock_last_price(ticker: str) -> tuple[float | None, str | None, str]:
     """Return (price, ts, source) using last trade or NBBO mid."""
-    if not CFG.massive_api_key:
+    token = _api_token()
+    if not token:
         return None, None, "massive_rest:last_trade"
 
     base = (CFG.rest_base or "https://api.massive.com").rstrip("/")
-    headers = {"Authorization": f"Bearer {CFG.massive_api_key}"}
+    headers = {"Authorization": f"Bearer {token}"}
     ticker_clean = ticker.upper().strip()
-    key_mask = _mask(CFG.massive_api_key)
+    key_mask = _mask(token)
 
     print(f"[MASSIVE REST] endpoint=last_trade key={key_mask}")
     try:

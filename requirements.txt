@@ -12,3 +12,5 @@ websocket-client
 scikit-learn
 streamlit
 Pytest 
+uv
+openai

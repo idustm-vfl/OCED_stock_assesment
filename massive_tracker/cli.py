@@ -22,7 +22,7 @@ from .picker import run_weekly_picker
 from .stock_ml import run_stock_ml
 from .oced import run_oced_scan
 from .promotion import promote_from_weekly_picks
-from .flatfiles import download_range, load_option_file
+from .flatfiles import download_range, load_option_file, load_stock_file
 from .massive_rest import MassiveREST
 from .massive_client import get_stock_last_price, get_option_chain_snapshot
 from .universe import sync_universe, get_universe
@@ -199,12 +199,15 @@ def flatfile_download(
 ):
     """Download a single Massive flatfile and optionally load into sqlite."""
     paths = download_range(dataset, date, date)
-    table = "option_bars_1d" if "day" in dataset else "option_bars_1m"
     loaded = 0
     for p in paths:
         if load:
-            loaded += load_option_file(Path(p), db_path, table, ts_hint=date)
-    print(f"[green]Downloaded[/green] {len(paths)} files; loaded rows={loaded} into {table}")
+            if "us_stocks" in dataset or "stocks" in dataset:
+                loaded += load_stock_file(Path(p), db_path, ts_hint=date)
+            else:
+                table = "option_bars_1d" if "day" in dataset else "option_bars_1m"
+                loaded += load_option_file(Path(p), db_path, table, ts_hint=date)
+    print(f"[green]Downloaded[/green] {len(paths)} files; loaded rows={loaded}")
 
 
 @app.command()
@@ -217,13 +220,16 @@ def flatfile_backfill(
 ):
     """Backfill a date range; downloads missing files only."""
     paths = download_range(dataset, start, end)
-    table = "option_bars_1d" if "day" in dataset else "option_bars_1m"
     loaded = 0
     for p in paths:
         if load:
             ts_hint = p.stem  # YYYY-MM-DD
-            loaded += load_option_file(Path(p), db_path, table, ts_hint=ts_hint)
-    print(f"[green]Backfill complete[/green] files={len(paths)} rows_loaded={loaded} table={table}")
+            if "us_stocks" in dataset or "stocks" in dataset:
+                loaded += load_stock_file(Path(p), db_path, ts_hint=ts_hint)
+            else:
+                table = "option_bars_1d" if "day" in dataset else "option_bars_1m"
+                loaded += load_option_file(Path(p), db_path, table, ts_hint=ts_hint)
+    print(f"[green]Backfill complete[/green] files={len(paths)} rows_loaded={loaded}")
 
 
 @app.command()
@@ -321,8 +327,8 @@ def env_check():
 
     print("[ENV CHECK]")
     keys = [
-        "MASSIVE_API_KEY",
         "MASSIVE_ACCESS_KEY",
+        "MASSIVE_KEY_ID",
         "MASSIVE_SECRET_KEY",
         "MASSIVE_S3_ENDPOINT",
         "MASSIVE_S3_BUCKET",
@@ -347,14 +353,14 @@ def smoke(db_path: str = "data/sqlite/tracker.db"):
     if not tickers:
         raise RuntimeError("Universe empty. Run `python -m massive_tracker.cli init` first.")
 
-    if not os.getenv("MASSIVE_API_KEY"):
-        print("[SMOKE] MASSIVE_API_KEY missing. Set it in your environment.")
+    if not os.getenv("MASSIVE_ACCESS_KEY"):
+        print("[SMOKE] MASSIVE_ACCESS_KEY missing. Set it in your environment.")
         return
 
     tickers = tickers[:3]
     print(f"[blue]Smoke[/blue] tickers={tickers}")
-    key_mask = (os.getenv("MASSIVE_API_KEY") or "None")[:5] + "*****"
-    print(f"[SMOKE] MASSIVE_API_KEY detected: {key_mask}")
+    key_mask = (os.getenv("MASSIVE_ACCESS_KEY") or "None")[:5] + "*****"
+    print(f"[SMOKE] MASSIVE_ACCESS_KEY detected: {key_mask}")
 
     price_rows = []
     missing_cache = []

@@ -9,6 +9,7 @@ class RuntimeConfig:
     """Central runtime configuration loaded once from environment."""
 
     massive_api_key: str
+    massive_key_id: str | None = None
     ws_feed: str = "delayed"
     ws_market: str = "options"
     rest_base: str | None = None
@@ -37,30 +38,44 @@ def _first_env(*names: str) -> str | None:
 def _mask(k: str | None) -> str:
     if not k:
         return "None"
-    return k[:5] + "*****"
+    return k[:3] + "*****"
 
 
 def load_runtime_config() -> RuntimeConfig:
-    key = os.getenv("MASSIVE_API_KEY")
+    key = os.getenv("MASSIVE_ACCESS_KEY")
     if not key:
-        raise RuntimeError("Missing MASSIVE_API_KEY in Codespaces secrets")
+        raise RuntimeError("Missing MASSIVE_ACCESS_KEY in Codespaces secrets")
+    key_id = os.getenv("MASSIVE_KEY_ID")
 
     if os.getenv("VFL_DEBUG_CONFIG", "").strip().lower() in {"1", "true", "yes"}:
         print(
             "Runtime env presence: "
-            f"MASSIVE_API_KEY={bool(os.getenv('MASSIVE_API_KEY'))} "
             f"MASSIVE_ACCESS_KEY={bool(os.getenv('MASSIVE_ACCESS_KEY'))} "
+            f"MASSIVE_KEY_ID={bool(os.getenv('MASSIVE_KEY_ID'))} "
             f"MASSIVE_SECRET_KEY={bool(os.getenv('MASSIVE_SECRET_KEY'))} "
             f"MASSIVE_S3_ENDPOINT={bool(os.getenv('MASSIVE_S3_ENDPOINT'))} "
             f"MASSIVE_S3_BUCKET={bool(os.getenv('MASSIVE_S3_BUCKET'))}"
         )
     if os.getenv("VFL_DEBUG_CONFIG") == "1":
-        print(f"[CONFIG] MASSIVE_API_KEY: {_mask(os.getenv('MASSIVE_API_KEY'))}")
-        print(f"[CONFIG] MASSIVE_ACCESS_KEY: {_mask(os.getenv('MASSIVE_ACCESS_KEY'))}")
-        print(f"[CONFIG] MASSIVE_SECRET_KEY: {_mask(os.getenv('MASSIVE_SECRET_KEY'))}")
+        debug_keys = (
+            "MASSIVE_ACCESS_KEY",
+            "MASSIVE_KEY_ID",
+            "MASSIVE_SECRET_KEY",
+            "MASSIVE_S3_ENDPOINT",
+            "MASSIVE_S3_BUCKET",
+            "MASSIVE_STOCKS_PREFIX",
+            "MASSIVE_OPTIONS_PREFIX",
+            "MASSIVE_WS_FEED",
+            "MASSIVE_WS_MARKET",
+            "MASSIVE_REST_BASE",
+            "VFL_PREMIUM_HISTORY_CSV",
+        )
+        for name in debug_keys:
+            print(f"[CONFIG] {name}: {_mask(os.getenv(name))}")
 
     return RuntimeConfig(
         massive_api_key=key.strip(),
+        massive_key_id=key_id.strip() if key_id else None,
         ws_feed=os.getenv("MASSIVE_WS_FEED", "delayed").strip() or "delayed",
         ws_market=os.getenv("MASSIVE_WS_MARKET", "options").strip() or "options",
         rest_base=os.getenv("MASSIVE_REST_BASE", "https://api.massive.com").strip() or "https://api.massive.com",
