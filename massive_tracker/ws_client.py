@@ -92,7 +92,9 @@ class MassiveWSClient:
     - "status": Connection status
     """
     
-    DEFAULT_WS_URL = "wss://socket.massive.com/stocks"
+    DEFAULT_WS_RealtimeURL = "wss://socket.massive.com/stocks"
+    DEFAULT_WS_URL = "wss://delayed.massive.com/stocks"
+
     
     def __init__(
         self,
@@ -236,7 +238,7 @@ class MassiveWSClient:
             return
         auth_msg = {
             "action": "auth",
-            "params": self.api_key,
+            "params": [self.api_key],
         }
         self.ws.send(json.dumps(auth_msg))
         print("[ws] Sent auth")
