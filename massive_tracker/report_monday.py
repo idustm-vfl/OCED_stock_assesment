@@ -207,45 +207,82 @@ def write_monday_report(db_path: str = "data/sqlite/tracker.db") -> str:
         lines.append("_No OCED rows available._")
     lines.append("")
 
-    lines.append("## Best Contract Candidates")
+    lines.append("## Best Contract Candidates (Grouped by Seed Bucket)")
     if valid_picks:
-        rows = []
-        for p in valid_picks[:10]:
-            rows.append(
-                [
-                    p.get("ticker"),
-                    p.get("expiry"),
-                    _fmt(p.get("strike")),
-                    _fmt(p.get("call_bid")),
-                    _fmt(p.get("call_ask")),
-                    _fmt(p.get("call_mid")),
-                    _fmt(p.get("premium_100")),
-                    _fmt(p.get("premium_yield")),
-                    p.get("price_source"),
-                    p.get("chain_source"),
-                    p.get("premium_source"),
-                    p.get("strike_source"),
-                ]
+        # Group by seed bucket
+        buckets = {
+            "<=5k": [],
+            "<=10k": [],
+            "<=25k": [],
+            "<=50k": [],
+            ">50k": [],
+        }
+        
+        for p in valid_picks:
+            pack_cost = p.get("pack_100_cost")
+            if pack_cost is None:
+                continue
+            
+            if pack_cost <= 5000:
+                buckets["<=5k"].append(p)
+            elif pack_cost <= 10000:
+                buckets["<=10k"].append(p)
+            elif pack_cost <= 25000:
+                buckets["<=25k"].append(p)
+            elif pack_cost <= 50000:
+                buckets["<=50k"].append(p)
+            else:
+                buckets[">50k"].append(p)
+        
+        for bucket_name, picks_in_bucket in buckets.items():
+            if not picks_in_bucket:
+                continue
+            
+            lines.append(f"### Seed Bucket: {bucket_name}")
+            rows = []
+            for p in picks_in_bucket[:10]:
+                oced_score = p.get("oced_rank_score", 0) or 0
+                llm_score = p.get("llm_rank_score", 0) or 0
+                combined_score = p.get("combined_rank_score", 0) or 0
+                
+                rows.append(
+                    [
+                        p.get("ticker"),
+                        _fmt(p.get("price")),
+                        _fmt(p.get("pack_100_cost")),
+                        p.get("expiry"),
+                        _fmt(p.get("strike")),
+                        _fmt(p.get("call_bid")),
+                        _fmt(p.get("call_ask")),
+                        _fmt(p.get("call_mid")),
+                        _fmt(p.get("premium_100")),
+                        _fmt(p.get("premium_yield")),
+                        _fmt(oced_score),
+                        _fmt(llm_score),
+                        f"{p.get('price_source', 'N/A')[:15]}",
+                    ]
+                )
+            lines.extend(
+                _table(
+                    [
+                        "ticker",
+                        "price",
+                        "pack_cost",
+                        "expiry",
+                        "strike",
+                        "bid",
+                        "ask",
+                        "mid",
+                        "prem_100",
+                        "prem_yield",
+                        "oced_sc",
+                        "llm_sc",
+                        "price_src",
+                    ],
+                    rows,
+                )
             )
-        lines.extend(
-            _table(
-                [
-                    "ticker",
-                    "expiry",
-                    "strike",
-                    "bid",
-                    "ask",
-                    "mid",
-                    "prem_100",
-                    "prem_yield",
-                    "price_src",
-                    "chain_src",
-                    "prem_src",
-                    "strike_src",
-                ],
-                rows,
-            )
-        )
+            lines.append("")
     else:
         lines.append("_No valid contract candidates._")
     lines.append("")

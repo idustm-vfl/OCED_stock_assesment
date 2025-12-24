@@ -12,7 +12,7 @@ import typer
 from rich import print
 
 # NOTE: root-level modules => NO relative imports (no leading dots)
-from .config import load_flatfile_config, load_runtime_config
+from .config import load_flatfile_config, load_runtime_config, print_key_status
 from .store import DB
 from .watchlist import Watchlists
 
@@ -335,6 +335,9 @@ def summary(db_path: str = "data/sqlite/tracker.db", seed: float = 9300.0):
 @app.command()
 def picker(db_path: str = "data/sqlite/tracker.db", top_n: int = 5):
     """Emit weekly picks into weekly_picks table."""
+    print_key_status()
+    print("")
+    
     sync_universe(DB(db_path))
     picks = run_weekly_picker(db_path=db_path, top_n=top_n)
     print(f"[green]Wrote picks[/green] to weekly_picks ({len(picks)} rows)")
@@ -368,6 +371,9 @@ def env_check():
 def smoke(db_path: str = "data/sqlite/tracker.db"):
     """Smoke test Massive pricing + picker math/provenance."""
     from datetime import datetime, timedelta
+
+    print_key_status()
+    print("")
 
     db = DB(db_path)
     db.connect().close()
@@ -512,6 +518,9 @@ def monday(
     """Monday run: ensure fresh cache, run picker, promote, write report."""
     from datetime import datetime, timezone, timedelta
 
+    print_key_status()
+    print("")
+
     db = DB(db_path)
     sync_universe(db)
     tickers = [t for t, _ in db.list_universe(enabled_only=True)]
@@ -547,6 +556,9 @@ def monday(
 @app.command()
 def friday_close(db_path: str = "data/sqlite/tracker.db"):
     """Friday close: compute outcomes and write weekly scorecard."""
+    print_key_status()
+    print("")
+    
     md = write_weekly_scorecard(db_path=db_path)
     print(f"[green]Weekly scorecard written[/green] lines={len(md.splitlines())}")
 

@@ -568,6 +568,43 @@ def run_weekly_picker(
         prem_source = "chain_mid"
         strike_source = picked.get("strike_source") or "lane_otm_ranker_v1"
 
+        # Enforce absolute requirement: strike, bid, ask must not be None
+        if target_strike is None:
+            db.log_weekly_pick_missing(
+                ts=ts,
+                ticker=ticker,
+                stage="selection",
+                reason="null_strike",
+                detail="strike is None",
+                source=chain_source,
+            )
+            audit_fail(ticker, "selection", "strike", None, None, chain_source)
+            continue
+        
+        if chain_bid is None:
+            db.log_weekly_pick_missing(
+                ts=ts,
+                ticker=ticker,
+                stage="premium",
+                reason="null_bid",
+                detail="bid is None",
+                source=chain_source,
+            )
+            audit_fail(ticker, "premium", "call_bid", None, None, chain_source)
+            continue
+        
+        if chain_ask is None:
+            db.log_weekly_pick_missing(
+                ts=ts,
+                ticker=ticker,
+                stage="premium",
+                reason="null_ask",
+                detail="ask is None",
+                source=chain_source,
+            )
+            audit_fail(ticker, "premium", "call_ask", None, None, chain_source)
+            continue
+
         prem_100_calc = round(float(chain_mid) * 100.0, 2) if chain_mid is not None else None
         prem_yield_calc = _safe_div(prem_100_calc, pack_cost)
         if chain_mid is None and prem_est is not None and price is not None:
@@ -722,6 +759,16 @@ def run_weekly_picker(
         if p.get("price") is not None
         and p.get("strike") is not None
         and p.get("call_mid") is not None
+        and p.get("call_bid") is not None
+        and p.get("call_ask") is not None
+        and p.get("premium_100") is not None
+        and p.get("premium_100") > 0
+        and p.get("premium_yield") is not None
+        and p.get("premium_yield") > 0
+        and p.get("price_source")
+        and p.get("chain_source")
+        and p.get("premium_source")
+        and p.get("strike_source")
     ]
 
     valid.sort(key=lambda p: p.get("final_rank_score", p.get("score", 0.0) or 0.0), reverse=True)
@@ -730,7 +777,8 @@ def run_weekly_picker(
     for idx, pick in enumerate(valid, start=1):
         pick["rank"] = idx
 
-    for pick in picks:
+    # ONLY write valid picks to weekly_picks table
+    for pick in valid:
         db.upsert_weekly_pick(pick)
 
-    return picks
+    return valid

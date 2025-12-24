@@ -19,7 +19,7 @@ from massive_tracker.summary import SUMMARY_PATH, write_summary
 from massive_tracker.watchlist import Watchlists
 from massive_tracker.store import DB
 from massive_tracker.ws_client import MassiveWSClient, make_monitor_bar_handler
-from massive_tracker.config import CFG
+from massive_tracker.config import CFG, mask5
 from massive_tracker.stock_ml import run_stock_ml
 from massive_tracker.universe import sync_universe
 from massive_tracker.compare_models import run_compare
@@ -245,6 +245,16 @@ def main() -> None:
     # Sidebar layout
     with st.sidebar:
         st.header("Operations")
+        
+        # Runtime Status
+        st.subheader("Runtime Status")
+        import os
+        st.caption(f"MASSIVE_API_KEY: {mask5(os.getenv('MASSIVE_API_KEY'))}")
+        st.caption(f"MASSIVE_ACCESS_KEY: {mask5(os.getenv('MASSIVE_ACCESS_KEY'))}")
+        st.caption(f"MASSIVE_KEY_ID: {mask5(os.getenv('MASSIVE_KEY_ID'))}")
+        st.caption(f"MASSIVE_SECRET_KEY: {mask5(os.getenv('MASSIVE_SECRET_KEY'))}")
+        st.divider()
+        
         db_path = st.text_input("SQLite DB path", value=DEFAULT_DB_PATH)
         tickers_raw = st.text_input("Tickers (comma-separated)", value="")
         monitor_triggers = st.checkbox("Trigger monitor on near-strike / rapid-up", value=True)
