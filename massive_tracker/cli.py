@@ -976,16 +976,3 @@ def sync_flatfiles(
 if __name__ == "__main__":
     app()
 
-git add massive_tracker/cli.py
-git commit -m "feat: add sync-flatfiles CLI command
-
-- Downloads and manages historical 1-minute data for ML features
-- Syncs with universe changes (add/remove/update tickers)
-- Appends new data incrementally
-- Shows summary with bar counts and date ranges"
-git add massive_tracker/ws_client.py
-git commit -m "fix: WebSocket authentication params format
-
-- Wrap API key in array as required by Massive API
-- Change from params: api_key to params: [api_key]
-- Aligns with Massive WebSocket documentation"
