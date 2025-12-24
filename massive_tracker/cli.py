@@ -2,6 +2,7 @@ import sys
 import os
 from pathlib import Path
 from datetime import datetime, timezone
+from .flatfile_manager import FlatfileManager
 
 # Ensure local module imports work when running: python cli.py ...
 ROOT = Path(__file__).resolve().parent
@@ -942,6 +943,49 @@ def run(db_path: str = "data/sqlite/tracker.db", date: str = ""):
     """
     run_once(db_path=db_path, date=date or None)
 
-
+@app.command()
+def sync_flatfiles(
+    db_path: str = "data/sqlite/tracker.db",
+    days_back: int = 60,
+    update_existing: bool = True,
+):
+    """
+    Sync historical flat files with universe.
+    
+    Downloads 1-minute aggregates from Massive API for all active tickers.
+    Updates existing files with recent data and removes inactive tickers.
+    """
+    print(f"[FLATFILE SYNC] Syncing flat files: days_back={days_back}, update={update_existing}")
+    
+    mgr = FlatfileManager(db_path=db_path)
+    mgr.sync_universe(days_back=days_back, update_existing=update_existing)
+    
+    # Show summary
+    stats = mgr.get_summary()
+    print(f"\n[SUMMARY]")
+    print(f"  Active tickers: {stats['active_tickers']}")
+    print(f"  Files present: {stats['files_present']}")
+    if stats['missing_files']:
+        print(f"  Missing files: {', '.join(stats['missing_files'])}")
+    if stats['orphaned_files']:
+        print(f"  Orphaned files: {', '.join(stats['orphaned_files'])}")
+    
+    print(f"\n[BAR COUNTS]")
+    for ticker, info in stats['bar_counts'].items():
+        print(f"  {ticker}: {info['bars']} bars ({info['first_date']} to {info['last_date']})")
 if __name__ == "__main__":
     app()
+
+git add massive_tracker/cli.py
+git commit -m "feat: add sync-flatfiles CLI command
+
+- Downloads and manages historical 1-minute data for ML features
+- Syncs with universe changes (add/remove/update tickers)
+- Appends new data incrementally
+- Shows summary with bar counts and date ranges"
+git add massive_tracker/ws_client.py
+git commit -m "fix: WebSocket authentication params format
+
+- Wrap API key in array as required by Massive API
+- Change from params: api_key to params: [api_key]
+- Aligns with Massive WebSocket documentation"
