@@ -17,10 +17,10 @@ logging.basicConfig(
 import websocket
 websocket.enableTrace(True)
 
-# Get API key from environment
-api_key = os.getenv("MASSIVE_API_KEY") or os.getenv("MASSIVE_ACCESS_KEY")
-if not api_key:
-    raise RuntimeError("MASSIVE_API_KEY or MASSIVE_ACCESS_KEY must be set")
+from massive_tracker.config import CFG
+
+# Get API key from configured runtime
+api_key = CFG.massive_api_key
 
 print(f"\n[TEST] Using API key: {api_key[:5]}*****\n")
 
@@ -42,7 +42,7 @@ try:
     ws = WebSocketClient(
         api_key=api_key,
         subscriptions=subscriptions,
-        feed="delayed"  # Explicitly use delayed feed
+        feed=CFG.ws_feed  # Use configured feed
     )
     
     print("[TEST] Starting WebSocket connection...")

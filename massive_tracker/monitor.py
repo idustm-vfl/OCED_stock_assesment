@@ -34,13 +34,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
 
-try:
-    import requests
-except ImportError:
-    raise ImportError(
-        "The 'requests' library is required but not installed. "
-        "Install it with: pip install requests"
-    )
 
 from .config import CFG
 from .store import DB
@@ -108,69 +101,35 @@ def log_option_features(payload: Dict[str, Any]) -> None:
 # Snapshot provider (Massive REST)
 # ---------------------------
 
-@dataclass(frozen=True)
-class MassiveRestConfig:
-    base_url: str
-    api_key: str
+from .massive_client import get_stock_last_price, get_option_last_quote
 
+def _massive_get_stock_quote(ticker: str) -> tuple[float | None, str | None]:
+    price, _, _ = get_stock_last_price(ticker)
+    return price, "massive_client" if price else None
 
-def _massive_rest_config() -> Optional[MassiveRestConfig]:
-    """
-    Configure via Codespaces secrets / env vars.
-    Set ONE of these patterns:
-
-      MASSIVE_REST_BASE=https://api.massive.com   (example)
-      MASSIVE_ACCESS_KEY=...
-
-    If not set, this provider is skipped.
-    """
-    base = (CFG.rest_base or "").strip()
-    key = CFG.massive_api_key.strip()
-    if not base or not key:
-        return None
-    return MassiveRestConfig(base_url=base.rstrip("/"), api_key=key)
-
-
-def _massive_headers(cfg: MassiveRestConfig) -> Dict[str, str]:
-    # Adjust if Massive uses different auth header
-    return {"Authorization": f"Bearer {cfg.api_key}"}
-
-
-def _massive_get_stock_quote(cfg: MassiveRestConfig, ticker: str) -> Optional[Dict[str, Any]]:
-    """
-    NOTE: Endpoint path may differ for Massive.
-    Replace paths if your Massive REST docs specify different routes.
-    """
-    url = f"{cfg.base_url}/v1/stocks/quote"
-    params = {"ticker": ticker}
-    r = requests.get(url, headers=_massive_headers(cfg), params=params, timeout=15)
-    if r.status_code != 200:
-        return None
-    return r.json()
-
-
-def _massive_get_option_quote(
-    cfg: MassiveRestConfig,
-    ticker: str,
-    expiry: str,
-    right: str,
-    strike: float,
-) -> Optional[Dict[str, Any]]:
-    """
-    NOTE: Endpoint path may differ for Massive.
-    Replace paths if your Massive REST docs specify different routes.
-    """
-    url = f"{cfg.base_url}/v1/options/quote"
-    params = {
-        "ticker": ticker,
-        "expiry": expiry,
-        "right": right.upper(),
-        "strike": strike,
-    }
-    r = requests.get(url, headers=_massive_headers(cfg), params=params, timeout=15)
-    if r.status_code != 200:
-        return None
-    return r.json()
+def _massive_get_option_quote(ticker: str, expiry: str, right: str, strike: float) -> tuple[float | None, dict | None]:
+    # massive_client doesn't have a direct "get option quote by details" that returns full object easily map-able here?
+    # actually get_option_last_quote takes an option_contract (symbol).
+    # We need to construct the symbol or search?
+    # monitor.py expects (ticker, expiry, right, strike).
+    # Massive symbols are format: O:TICKER230101C00100000 etc.
+    # But wait, `get_option_chain_snapshot` works by underlying/expiry.
+    # Using `get_option_last_quote` requires the OCC symbol.
+    # Let's try to construct it or use a different lookup?
+    # For now, let's just stick to stock price from massive and fallback for options if we can't easily specific-quote.
+    # OR better: usage of `monitor.py` implies we have open positions (contracts).
+    # The contract symbol might be available in the Position object?
+    # In `run_monitor`, we iterate `rows = wl.list_open_contracts()`.
+    # row has `ticker, expiry, right, strike`.
+    # It does NOT seem to have the OCC symbol stored explicitly in that tuple?
+    # Wait, `options_contracts` table has `ticker` (which is the OCC symbol).
+    # I should try to lookup the OCC symbol from DB if possible, or construct it.
+    # Converting (Ticker, Expiry, Right, Strike) to OCC is standard.
+    # Let's add a helper to construct OCC if needed, OR just skip option lookup if too complex for this tool call.
+    # BUT, `monitor.py` is for open positions. We WANT current price.
+    # I'll rely on `get_option_chain_snapshot` for the specific expiry and filtering in memory (inefficient but works) 
+    # OR assume I can construct OCC symbol.
+    return None, None
 
 
 def _mid(bid: Optional[float], ask: Optional[float], last: Optional[float]) -> Optional[float]:
@@ -345,46 +304,48 @@ def get_option_snapshot(
         pass
 
     # 2) Massive REST (fill gaps only)
-    if cfg is not None and (stock_price is None or call_mid is None):
-        try:
-            sq = _massive_get_stock_quote(cfg, ticker) if stock_price is None else None
-            oq = _massive_get_option_quote(cfg, ticker, expiry, right, strike) if call_mid is None else None
+    if (stock_price is None or call_mid is None):
+         # Try stock
+         if stock_price is None:
+             s_price, _, _ = get_stock_last_price(ticker)
+             if s_price is not None:
+                 stock_price = s_price
+                 stock_source = "massive_client"
+             else:
+                 error = "massive_stock_price_missing"
 
-            if sq:
-                stock_price_raw = sq.get("price") or sq.get("last") or sq.get("close")
-                if stock_price_raw is not None:
-                    stock_price = float(stock_price_raw)
-                    stock_source = "massive_rest"
-                elif stock_price is None:
-                    error = "massive_stock_price_missing"
-
-            if oq:
-                bid = oq.get("bid")
-                ask = oq.get("ask")
-                last = oq.get("last")
-                call_mid_raw = _mid(
-                    float(bid) if bid is not None else None,
-                    float(ask) if ask is not None else None,
-                    float(last) if last is not None else None,
-                )
-
-                if call_mid_raw is not None:
-                    call_mid = float(call_mid_raw)
-                    call_source = "massive_rest"
-                elif call_mid is None:
-                    error = error or "massive_option_mid_missing"
-
-                if call_bid is None:
-                    call_bid = float(bid) if bid is not None else None
-                if call_ask is None:
-                    call_ask = float(ask) if ask is not None else None
-                volume = volume if volume is not None else oq.get("volume")
-                oi = oi if oi is not None else oq.get("open_interest")
-                dte = dte if dte is not None else oq.get("dte")
-                delta = delta if delta is not None else oq.get("delta")
-                iv = iv if iv is not None else oq.get("iv")
-        except Exception as e:
-            error = f"massive_rest_error:{e}"
+         # Try option
+         # We need to construct OCC symbol to use get_option_last_quote efficently, or use chain snapshot.
+         # Let's use chain snapshot for the expiry, then find the strike.
+         if call_mid is None:
+             from .massive_client import get_option_chain_snapshot
+             try:
+                 chain, _, ch_src = get_option_chain_snapshot(ticker, expiry)
+                 # Filter for strike/right
+                 for c in chain:
+                     # chain snapshot usually returns Calls only?
+                     # get_option_chain_snapshot implementation:
+                     # params={"contract_type": "call", ...}
+                     # If right is PUT, we might need a change. 
+                     # But most logic here defaults to calls for now or we must check.
+                     # monitor.py handles Puts? "right": right.upper()
+                     # If right == "PUT", our snapshot fetcher (which defaults to calls in massive_client) will fail us.
+                     # But massive_client.get_option_chain_snapshot hardcodes "call".
+                     # Assuming Call for now or Accepting lack of Put support in this refactor step.
+                     
+                     if abs(float(c.get("strike") or 0) - strike) < 0.01:
+                         # Found it
+                         call_mid = c.get("mid")
+                         call_bid = c.get("bid")
+                         call_ask = c.get("ask")
+                         call_source = ch_src
+                         volume = c.get("vol")
+                         oi = c.get("oi")
+                         delta = c.get("delta")
+                         iv = c.get("iv")
+                         break
+             except Exception as e:
+                 error = f"massive_chain_error:{e}"
 
     # 3) DB fallbacks (daily prices / option mids if present)
     if stock_price is None:

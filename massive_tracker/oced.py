@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import requests
+
 
 from .config import CFG
 from .store import DB
@@ -359,33 +359,18 @@ def get_ohlcv_daily(
 # =============================================================================
 
 
+from .massive_client import get_stock_last_price
+
 def fetch_massive_quote_price(ticker: str) -> Optional[float]:
-    base = (CFG.rest_base or "").strip()
-    key = CFG.massive_api_key.strip()
-    if not base or not key:
+    """Fetch current stock price via massive_client."""
+    if not (HAVE_MASSIVE and _massive_api_key()):
         return None
 
-    url = f"{base.rstrip('/')}/v1/stocks/quote"
     try:
-        r = requests.get(
-            url,
-            headers={"Authorization": f"Bearer {key}"},
-            params={"ticker": ticker},
-            timeout=10,
-        )
-        if r.status_code != 200:
-            return None
-        data = r.json() or {}
-        for field in ("last", "last_price", "price", "p", "c"):
-            val = data.get(field)
-            if val is not None:
-                try:
-                    return float(val)
-                except Exception:
-                    continue
+        price, _, _ = get_stock_last_price(ticker)
+        return price
     except Exception:
         return None
-    return None
 
 
 # =============================================================================

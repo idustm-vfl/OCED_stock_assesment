@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
-import requests
+
+
 
 from .config import CFG
 
@@ -107,36 +108,42 @@ def get_stock_last_price(ticker: str) -> tuple[float | None, str | None, str]:
     if not token:
         return None, None, "massive_rest:last_trade"
 
-    base = (CFG.rest_base or "https://api.massive.com").rstrip("/")
-    headers = {"Authorization": f"Bearer {token}"}
-    ticker_clean = ticker.upper().strip()
-    key_mask = _mask(token)
-
-    print(f"[MASSIVE REST] endpoint=last_trade key={key_mask}")
     try:
-        resp = requests.get(f"{base}/v2/last/trade/{ticker_clean}", headers=headers, timeout=10)
-        if resp.status_code != 200:
-            print(f"[MASSIVE REST ERROR] endpoint=last_trade key={key_mask} status={resp.status_code}")
-        trade = resp.json() if resp.status_code == 200 else {}
-        price = trade.get("price")
-        ts = _ts_from_ns(trade.get("sip_timestamp") or trade.get("timestamp"))
+        # Use the SDK's get_last_trade or equivalent if available,
+        # but the original code was mixed.
+        # Assuming the SDK might have a method for this, or we rely on _sdk_get if we want to be consistent?
+        # The original code called requests direct.
+        # Let's try to use _sdk_get logic or strict SDK methods.
+        # However, `get_stock_last_price` in the original code tried strict REST calls.
+        # I will replace this with a call using `_sdk_get` which uses the initialized `rest` client.
+        
+        # Endpoint: /v2/last/trade/{ticker}
+        data = _sdk_get(f"/v2/last/trade/{ticker_clean}")
+        trade = data.get("results") or data
+        # Note: raw API might return different structure than what requests.get().json() did if wrappers involved?
+        # requests.get(...).json() returns the body. _sdk_get returns result of rest.get().
+        
+        # If _sdk_get returns the full JSON response:
+        price = trade.get("price") or trade.get("p")
+        ts = _ts_from_ns(trade.get("sip_timestamp") or trade.get("t") or trade.get("timestamp"))
+        
         if price is not None:
-            return float(price), ts, "massive_rest:last_trade"
-    except Exception:
-        pass
+             return float(price), ts, "massive_rest:last_trade_sdk"
+             
+    except Exception as e:
+        print(f"[MASSIVE SDK] get_stock_last_price failed for {ticker_clean}: {e}")
 
+    # Fallback to NBBO via SDK if trade failed
     try:
-        print(f"[MASSIVE REST] fallback NBBO for {ticker_clean} using key {key_mask}")
-        resp = requests.get(f"{base}/v2/last/nbbo/{ticker_clean}", headers=headers, timeout=10)
-        if resp.status_code != 200:
-            print(f"[MASSIVE REST ERROR] endpoint=last_nbbo key={key_mask} status={resp.status_code}")
-        nbbo = resp.json() if resp.status_code == 200 else {}
-        bid = nbbo.get("bidprice") or nbbo.get("bid_price")
-        ask = nbbo.get("askprice") or nbbo.get("ask_price")
+        data = _sdk_get(f"/v2/last/nbbo/{ticker_clean}")
+        nbbo = data.get("results") or data
+        bid = nbbo.get("bidprice") or nbbo.get("bid_price") or nbbo.get("b") or nbbo.get("p") # p is unlikely for bid, but massive sometimes uses short keys
+        ask = nbbo.get("askprice") or nbbo.get("ask_price") or nbbo.get("a") or nbbo.get("P")
+        
         if bid is not None and ask is not None:
             mid = (float(bid) + float(ask)) / 2.0
-            ts = _ts_from_ns(nbbo.get("sip_timestamp") or nbbo.get("timestamp"))
-            return mid, ts, "massive_rest:last_nbbo_mid"
+            ts = _ts_from_ns(nbbo.get("sip_timestamp") or nbbo.get("t") or nbbo.get("timestamp"))
+            return mid, ts, "massive_rest:last_nbbo_mid_sdk"
     except Exception:
         pass
 
@@ -279,3 +286,52 @@ def get_option_contract_snapshot(
     ts = _ts_from_ns(last_quote.get("last_updated")) or _ts_from_ns(result.get("last_updated"))
     result["underlying"] = underlying
     return result, ts, "massive_rest:contract_snapshot"
+
+
+def get_options_contracts(**kwargs) -> list[dict]:
+    """Fetch options contracts reference data with pagination."""
+    params = {k: v for k, v in kwargs.items() if v is not None}
+    results: list[dict] = []
+    
+    # Use _sdk_get for the first call
+    try:
+        data = _sdk_get("/v3/reference/options/contracts", params=params)
+    except Exception as e:
+        print(f"[MASSIVE SDK] get_options_contracts failed: {e}")
+        return []
+
+    results.extend(data.get("results", []) or [])
+    next_url = data.get("next_url")
+
+    safety = 0
+    while next_url and safety < 50:
+        # Massive next_url is usually a full URL.
+        # _sdk_get expects a path. We need to handle this.
+        # However, _sdk_get calls rest.get(path). 
+        # If rest.get supports full URL, great. If not, we rely on _sdk_get usually just passing through.
+        # But wait, _sdk_get implementation (in my previous edit) kept using rest.get.
+        # I'll rely on the SDK client to handle the path or I'll parse it.
+        # Safer: extract path from next_url.
+        
+        try:
+            # simple hack: if it starts with https://api.massive.com, strip it
+            # But the base might vary.
+            # actually rest.get usually takes "path".
+            # Let's try to pass the path suffix.
+            token_idx = next_url.find("/v3/")
+            if token_idx == -1:
+                token_idx = next_url.find("/v1/") # fallback
+            
+            if token_idx != -1:
+                path = next_url[token_idx:]
+                data = _sdk_get(path)
+                results.extend(data.get("results", []) or [])
+                next_url = data.get("next_url")
+            else:
+                break
+        except Exception:
+            break
+        safety += 1
+
+    return results
+

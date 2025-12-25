@@ -3,6 +3,12 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 
 @dataclass(frozen=True)
 class RuntimeConfig:
@@ -56,14 +62,15 @@ def print_key_status():
     print(f"MASSIVE_KEY_ID: {mask5(os.getenv('MASSIVE_KEY_ID'))}")
 
 
+
 def load_runtime_config() -> RuntimeConfig:
-    key = os.getenv("MASSIVE_ACCESS_KEY")
+    key = os.getenv("MASSIVE_ACCESS_KEY") or os.getenv("MASSIVE_API_KEY")
     if not key:
         # For testing environments, allow missing key with a warning
         if os.getenv("PYTEST_CURRENT_TEST"):
             key = "test_key_placeholder"
         else:
-            raise RuntimeError("Missing MASSIVE_ACCESS_KEY in Codespaces secrets")
+            raise RuntimeError("Missing MASSIVE_ACCESS_KEY or MASSIVE_API_KEY in environment/Codespaces secrets")
     key_id = os.getenv("MASSIVE_KEY_ID")
 
     if os.getenv("VFL_DEBUG_CONFIG", "").strip().lower() in {"1", "true", "yes"}:
@@ -95,7 +102,7 @@ def load_runtime_config() -> RuntimeConfig:
     return RuntimeConfig(
         massive_api_key=key.strip(),
         massive_key_id=key_id.strip() if key_id else None,
-        ws_feed=os.getenv("MASSIVE_WS_FEED", "delayed").strip() or "delayed",
+        ws_feed=os.getenv("MASSIVE_WS_FEED", "delayed.massive.com").strip() or "delayed.massive.com",
         ws_market=os.getenv("MASSIVE_WS_MARKET", "options").strip() or "options",
         rest_base=os.getenv("MASSIVE_REST_BASE", "https://api.massive.com").strip() or "https://api.massive.com",
         premium_history_csv=os.getenv("VFL_PREMIUM_HISTORY_CSV", "vfl_option_premium_history.csv"),
@@ -105,9 +112,9 @@ def load_runtime_config() -> RuntimeConfig:
 def load_flatfile_config(*, required: bool = True) -> FlatfileConfig | None:
     """Load optional Massive flatfile (S3) credentials from env."""
 
-    access_key = _first_env("MASSIVE_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "M_S3_ACCESS_KEY_ID")
-    secret_key = _first_env("MASSIVE_SECRET_KEY", "AWS_SECRET_ACCESS_KEY", "M_S3_SECRET_ACCESS_KEY")
-
+    access_key = _first_env("MASSIVE_KEY_ID")
+    secret_key = _first_env("MASSIVE_API_KEY")
+    
     if not access_key or not secret_key:
         if required:
             raise RuntimeError(

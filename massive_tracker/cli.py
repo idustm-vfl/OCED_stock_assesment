@@ -24,8 +24,8 @@ from .stock_ml import run_stock_ml
 from .oced import run_oced_scan
 from .promotion import promote_from_weekly_picks
 from .flatfiles import download_range, load_option_file, load_stock_file
-from .massive_rest import MassiveREST
-from .massive_client import get_stock_last_price, get_option_chain_snapshot
+from .flatfiles import download_range, load_option_file, load_stock_file
+from .massive_client import get_stock_last_price, get_option_chain_snapshot, get_options_contracts
 from .universe import sync_universe, get_universe
 from .summary import write_summary
 from .covered_calls import rank_covered_calls, next_fridays, load_spot_map, save_results
@@ -269,20 +269,7 @@ def refresh_contracts(
 ):
     """Fetch options contracts from Massive REST and cache into sqlite."""
 
-    cfg = _cfg()
-    client = MassiveREST(base=cfg.rest_base, api_key=cfg.massive_api_key)
-
-    params = {
-        "underlying_ticker": underlying or None,
-        "expiration_date": expiration_date or None,
-        "contract_type": contract_type or None,
-        "expired": expired,
-        "limit": limit,
-        "sort": sort,
-        "order": order,
-    }
-
-    rows = client.get_options_contracts(**params)
+    rows = get_options_contracts(**params)
     db = DB(db_path)
     cached = db.upsert_options_contracts(rows)
     print(
