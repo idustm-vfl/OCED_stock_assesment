@@ -8,7 +8,6 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
-import requests
 
 # Ensure project root is importable
 ROOT = Path(__file__).resolve().parent.parent
@@ -104,20 +103,19 @@ def get_stats(db_path):
     except Exception:
         return {"Error": "DB Error"}
 
-def fetch_raw_json(ticker, endpoint_type="stock"):
-    params = {'apiKey': CFG.massive_api_key, 'limit': 1}
-    try:
-        if endpoint_type == "stock":
-            # Just a recent sample
-            url = f'https://api.massive.com/v2/aggs/ticker/{ticker.upper()}/range/1/day/2024-12-01/2024-12-10'
-        else:
-            url = 'https://api.massive.com/v3/reference/options/contracts'
-            params['underlying_ticker'] = ticker.upper()
-        
-        r = requests.get(url, params=params)
-        return r.status_code, r.json()
-    except Exception as e:
-        return 500, {"error": str(e)}
+def fetch_raw_json(ticker: str, endpoint_type: str = "stock") -> tuple[int, dict]:
+    from massive_tracker.massive_client import get_raw_json
+    
+    if endpoint_type == "stock":
+        path = f"/v2/aggs/ticker/{ticker.upper()}/range/1/day/2024-12-01/2024-12-10"
+        params = {"limit": 1}
+    else:
+        path = "/v3/reference/options/contracts"
+        params = {"underlying_ticker": ticker.upper(), "limit": 1}
+    
+    data = get_raw_json(path, params=params)
+    status_code = 200 if "error" not in data else 500
+    return status_code, data
 
 # --- MAIN APP ---
 

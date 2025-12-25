@@ -14,14 +14,8 @@ import pandas as pd
 from .config import CFG
 from .store import DB
 
-# Optional Massive REST client
-try:
-    from massive import RESTClient  # type: ignore
 
-    HAVE_MASSIVE = True
-except Exception:  # pragma: no cover - optional dependency
-    RESTClient = None  # type: ignore
-    HAVE_MASSIVE = False
+HAVE_MASSIVE = True
 
 
 try:
@@ -316,32 +310,18 @@ def fetch_ohlcv_massive_daily(
     start_date: dt.date,
     end_date: dt.date,
 ) -> Optional[pd.DataFrame]:
-    if not (HAVE_MASSIVE and _massive_api_key() and RESTClient):
-        return None
-
-    client = RESTClient(_massive_api_key())  # type: ignore[arg-type]
-
+    from .massive_client import get_aggs_df
+    
     start_str = start_date.isoformat()
     end_str = end_date.isoformat()
-
-    rows: List[Dict[str, Any]] = []
-    for a in client.list_aggs(ticker, 1, "day", start_str, end_str, limit=5000):
-        rows.append(
-            {
-                "date": dt.datetime.utcfromtimestamp(a.t / 1_000_000_000).date(),
-                "open": float(a.o),
-                "high": float(a.h),
-                "low": float(a.l),
-                "close": float(a.c),
-                "volume": float(a.v),
-            }
-        )
-
-    if not rows:
+    
+    df = get_aggs_df(ticker, 1, "day", start_str, end_str, limit=5000)
+    if df.empty:
         return None
-
-    df = pd.DataFrame(rows)
-    return df.sort_values("date").reset_index(drop=True)
+        
+    # Standardize column names if needed by analyze_ticker
+    # get_aggs_df already returns: date, open, high, low, close, volume
+    return df
 
 
 def fetch_ohlcv_local_flatfile(ticker: str) -> Optional[pd.DataFrame]:

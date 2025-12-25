@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import pandas as pd
-from .massive_client import get_aggs
+from .massive_client import get_aggs_df
 from .store import DB
 from .watchlist import Watchlists
 
@@ -90,12 +90,11 @@ class FlatfileManager:
         logger.info(f"Downloading {ticker} history: {start_date.date()} to {end_date.date()}")
         
         try:
-            # Use Massive API to get 1-minute aggregates
-            # Format: /v2/aggs/ticker/{ticker}/range/1/minute/{from}/{to}
+            # Use Massive API via unified client to get 1-minute aggregates
             from_str = start_date.strftime("%Y-%m-%d")
             to_str = end_date.strftime("%Y-%m-%d")
             
-            data = get_aggs(
+            df = get_aggs_df(
                 ticker=ticker,
                 multiplier=1,
                 timespan="minute",
@@ -103,29 +102,17 @@ class FlatfileManager:
                 to_date=to_str,
             )
             
-            if not data or 'results' not in data:
+            if df.empty:
                 logger.warning(f"No data returned for {ticker}")
                 return pd.DataFrame()
             
-            results = data['results']
-            df = pd.DataFrame(results)
+            # Standardize columns to what FlatfileManager expects
+            # get_aggs_df returns: date, open, high, low, close, volume, timestamp...
+            # We want: timestamp, open, high, low, close, volume
+            if 'date' in df.columns and 'timestamp' not in df.columns:
+                 df = df.rename(columns={'date': 'timestamp'})
             
-            # Rename columns to match expected format
-            if not df.empty:
-                df = df.rename(columns={
-                    't': 'timestamp',
-                    'o': 'open',
-                    'h': 'high',
-                    'l': 'low',
-                    'c': 'close',
-                    'v': 'volume',
-                })
-                
-                # Convert timestamp from milliseconds to datetime
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                
-                # Select only required columns
-                df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+            df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
                 
             logger.info(f"Downloaded {len(df)} bars for {ticker}")
             return df

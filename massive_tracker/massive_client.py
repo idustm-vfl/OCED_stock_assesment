@@ -64,6 +64,10 @@ def _sdk_get(path: str, params: dict | None = None) -> dict:
     if rest is None:
         raise RuntimeError("Massive REST client unavailable. Install `massive` and set MASSIVE_ACCESS_KEY/MASSIVE_KEY_ID.")
     token = _api_token()
+    # Ensure path starts with /
+    if not path.startswith("/"):
+        path = "/" + path
+    
     print(f"[MASSIVE REST] endpoint={path} key={_mask(token)}")
     for name in ("get", "_get"):
         fn = getattr(rest, name, None)
@@ -73,6 +77,14 @@ def _sdk_get(path: str, params: dict | None = None) -> dict:
             except TypeError:
                 return fn(path, params)
     raise RuntimeError("Massive REST client missing get/_get method.")
+
+
+def get_raw_json(path: str, params: dict | None = None) -> dict:
+    """Central entry point for raw JSON (used by UI for peeking)."""
+    try:
+        return _sdk_get(path, params=params)
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def _extract_price_from_stock_snapshot(result: dict) -> tuple[float | None, str | None]:
@@ -399,7 +411,43 @@ def get_options_contracts(**kwargs) -> list[dict]:
 
 
 def get_aggs(ticker: str, multiplier: int, timespan: str, from_date: str, to_date: str, **kwargs) -> dict:
-    """Fetch aggregates (bars) for a ticker."""
-    # /v2/aggs/ticker/{stocksTicker}/range/{multiplier}/{timespan}/{from}/{to}
+    """Fetch aggregates (bars) for a ticker (returns raw dict)."""
     path = f"/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from_date}/{to_date}"
     return _sdk_get(path, params=kwargs)
+
+
+def get_aggs_df(ticker: str, multiplier: int, timespan: str, from_date: str, to_date: str, **kwargs) -> pd.DataFrame:
+    """Fetch aggregates and return a standardized pandas DataFrame."""
+    import pandas as pd
+    data = get_aggs(ticker, multiplier, timespan, from_date, to_date, **kwargs)
+    results = data.get("results") or []
+    if not results:
+        return pd.DataFrame()
+    
+    df = pd.DataFrame(results)
+    # Standardize column names
+    col_map = {
+        't': 'timestamp',
+        'timestamp': 'timestamp',
+        'o': 'open',
+        'h': 'high',
+        'l': 'low',
+        'c': 'close',
+        'v': 'volume',
+        'vw': 'vwap',
+        'n': 'transactions'
+    }
+    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+    
+    # Standardize timestamp to datetime
+    if 'timestamp' in df.columns:
+        # Handle ms vs ns vs s
+        ts_sample = float(df['timestamp'].iloc[0])
+        if ts_sample > 1e15: # ns
+             df['date'] = pd.to_datetime(df['timestamp'], unit='ns', utc=True)
+        elif ts_sample > 1e12: # ms
+             df['date'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+        else: # s
+             df['date'] = pd.to_datetime(df['timestamp'], unit='s', utc=True)
+    
+    return df
