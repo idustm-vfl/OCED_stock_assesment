@@ -42,9 +42,11 @@ try:
     ws = WebSocketClient(
         api_key=api_key,
         subscriptions=subscriptions,
-        feed=CFG.ws_feed  # Use configured feed
+        feed=CFG.ws_feed,  # Use configured feed
+        market=CFG.ws_market  # Use configured market (options)
     )
     
+    print(f"[TEST] connect: wss://{CFG.ws_feed}/{CFG.ws_market}")
     print("[TEST] Starting WebSocket connection...")
     ws.run(handle_msg=handle_msg)
     
