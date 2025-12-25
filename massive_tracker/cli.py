@@ -573,7 +573,6 @@ def audit(
     """Audit weekly pick math, provenance, and fallback usage."""
     from pathlib import Path
     import csv
-    from massive_tracker.store import DB
 
     REPORT_DIR = Path("data/reports")
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
