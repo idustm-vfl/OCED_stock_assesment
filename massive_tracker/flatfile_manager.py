@@ -17,7 +17,7 @@ from typing import List, Optional
 
 import pandas as pd
 from .massive_client import get_aggs_df
-from .store import DB
+from .store import get_db
 from .watchlist import Watchlists
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ class FlatfileManager:
         db_path: str = "data/sqlite/tracker.db",
         flatfile_dir: Path | str = DEFAULT_FLATFILE_DIR,
     ):
-        self.db = DB(db_path)
+        self.db = get_db(db_path)
         self.flatfile_dir = Path(flatfile_dir)
         self.flatfile_dir.mkdir(parents=True, exist_ok=True)
         

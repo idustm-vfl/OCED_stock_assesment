@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timezone
 import pathlib
-from massive_tracker.store import DB
+from massive_tracker.store import get_db
 from massive_tracker.massive_client import get_raw_json
 from massive_tracker.oced import run_oced_scan
 from massive_tracker.flatfile_manager import FlatfileManager, sync_universe
@@ -22,18 +22,18 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- DATA HELPERS ---
-def get_db():
-    return DB(DB_PATH)
+def get_db_instance():
+    return get_db(DB_PATH)
 
 def load_oced_data():
-    db = get_db()
+    db = get_db_instance()
     # Get last 50 scores
     with db.connect() as con:
         df = pd.read_sql_query("SELECT * FROM oced_scores ORDER BY ts DESC, CoveredCall_Suitability DESC LIMIT 200", con)
     return df
 
 def load_picks_data():
-    db = get_db()
+    db = get_db_instance()
     with db.connect() as con:
         df = pd.read_sql_query("SELECT * FROM weekly_picks ORDER BY ts DESC", con)
     return df
@@ -41,7 +41,7 @@ def load_picks_data():
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("🛡️ Data Health")
-    db = get_db()
+    db = get_db_instance()
     try:
         with db.connect() as con:
             univ_count = con.execute("SELECT COUNT(*) FROM universe WHERE enabled=1").fetchone()[0]

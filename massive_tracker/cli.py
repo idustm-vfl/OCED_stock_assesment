@@ -14,7 +14,7 @@ from rich import print
 
 # NOTE: root-level modules => NO relative imports (no leading dots)
 from .config import load_flatfile_config, load_runtime_config, print_key_status
-from .store import DB
+from .store import get_db
 from .watchlist import Watchlists
 
 from .ingest import ingest_daily
@@ -39,23 +39,12 @@ from .run import run_once
 app = typer.Typer(add_completion=False)
 
 
-_CFG_CACHE = None
-
-
-def _cfg():
-    global _CFG_CACHE
-    if _CFG_CACHE is None:
-        _CFG_CACHE = load_runtime_config()
-    return _CFG_CACHE
-
-
-
 @app.command()
 def init(db_path: str = "data/sqlite/tracker.db"):
     """Initialize local DB and folders."""
-    DB(db_path).connect().close()
+    get_db(db_path).connect().close()
     try:
-        db = DB(db_path)
+        db = get_db(db_path)
         synced = sync_universe(db)
         print(f"[green]Universe synced[/green] rows={synced}")
     except Exception as e:
@@ -83,7 +72,7 @@ def wizard(db_path: str = "data/sqlite/tracker.db"):
 
 @app.command()
 def add_ticker(ticker: str, db_path: str = "data/sqlite/tracker.db"):
-    wl = Watchlists(DB(db_path))
+    wl = Watchlists(get_db(db_path))
     wl.add_ticker(ticker)
     print(f"[green]Added ticker[/green] {ticker.upper()}")
 
@@ -93,7 +82,7 @@ def oced_status(db_path: str = "data/sqlite/tracker.db"):
     """
     Show OCED coverage: row count, latest ts, top tickers by CoveredCall_Suitability.
     """
-    db = DB(db_path)
+    db = get_db(db_path)
     stats = db.get_oced_stats()
     top = db.get_latest_oced_top(n=10)
     print(stats)
@@ -103,7 +92,7 @@ def oced_status(db_path: str = "data/sqlite/tracker.db"):
 
 @app.command()
 def ml_status(db_path: str = "data/sqlite/tracker.db"):
-    db = DB(db_path)
+    db = get_db(db_path)
     print(db.get_ml_status())
 
 
@@ -139,7 +128,7 @@ def seed_universe(db_path: str = "data/sqlite/tracker.db"):
         "CLOV",
     ]
 
-    wl = Watchlists(DB(db_path))
+    wl = Watchlists(get_db(db_path))
     for t in universe:
         wl.add_ticker(t)
     print(f"[green]Seeded universe[/green] {len(universe)} tickers -> tickers table")
@@ -154,7 +143,7 @@ def add_contract(
     qty: int = 1,
     db_path: str = "data/sqlite/tracker.db",
 ):
-    wl = Watchlists(DB(db_path))
+    wl = Watchlists(get_db(db_path))
     wl.add_contract(ticker, expiry, right, strike, qty)
     print(f"[green]Added contract[/green] {ticker.upper()} {expiry} {right.upper()} {strike} x{qty}")
 
@@ -183,13 +172,13 @@ def pick_covered_calls(
 
 @app.command()
 def list_watch(db_path: str = "data/sqlite/tracker.db"):
-    wl = Watchlists(DB(db_path))
+    wl = Watchlists(get_db(db_path))
     print(wl.list_tickers())
 
 
 @app.command()
 def list_contracts(db_path: str = "data/sqlite/tracker.db"):
-    wl = Watchlists(DB(db_path))
+    wl = Watchlists(get_db(db_path))
     rows = wl.list_open_contracts()
     for r in rows:
         print(r)
@@ -206,7 +195,7 @@ def ingest(
     cfg = load_flatfile_config(required=True)
     out = ingest_daily(
         cfg,
-        DB(db_path),
+        get_db(db_path),
         date,
         download_stocks=not no_stocks,
         download_options=download_options,
@@ -270,7 +259,7 @@ def refresh_contracts(
     """Fetch options contracts from Massive REST and cache into sqlite."""
 
     rows = get_options_contracts(**params)
-    db = DB(db_path)
+    db = get_db(db_path)
     cached = db.upsert_options_contracts(rows)
     print(
         f"[green]Contracts cached[/green] fetched={len(rows)} stored={cached} "
@@ -297,7 +286,7 @@ def daily(
     top_n: int = 3,
 ):
     """One-shot daily flow: sync universe -> picker -> promote -> monitor -> summary."""
-    db = DB(db_path)
+    db = get_db(db_path)
     sync_universe(db)
     picks = run_weekly_picker(db_path=db_path, top_n=10)
     promote_from_weekly_picks(db_path=db_path, seed=seed, lane=lane, top_n=top_n)
@@ -326,7 +315,7 @@ def picker(db_path: str = "data/sqlite/tracker.db", top_n: int = 5):
     print_key_status()
     print("")
     
-    sync_universe(DB(db_path))
+    sync_universe(get_db(db_path))
     picks = run_weekly_picker(db_path=db_path, top_n=top_n)
     print(f"[green]Wrote picks[/green] to weekly_picks ({len(picks)} rows)")
 
@@ -363,7 +352,7 @@ def smoke(db_path: str = "data/sqlite/tracker.db"):
     print_key_status()
     print("")
 
-    db = DB(db_path)
+    db = get_db(db_path)
     db.connect().close()
     sync_universe(db)
     tickers = [t for t, _ in db.list_universe(enabled_only=True)]
@@ -468,7 +457,7 @@ def start(
     import time
     from massive_tracker.ws_client import MassiveWSClient
 
-    db = DB(db_path)
+    db = get_db(db_path)
     sync_universe(db)
     tickers = [t for t, _ in db.list_universe(enabled_only=True)]
     if not tickers:
@@ -509,7 +498,7 @@ def monday(
     print_key_status()
     print("")
 
-    db = DB(db_path)
+    db = get_db(db_path)
     sync_universe(db)
     tickers = [t for t, _ in db.list_universe(enabled_only=True)]
     if not tickers:
@@ -556,7 +545,7 @@ def chain_fetch(db_path: str = "data/sqlite/tracker.db", expiry: str = "", top_n
     """Fetch option chain snapshots for enabled tickers and cache to sqlite."""
     from massive_tracker.options_chain import get_option_chain
 
-    db = DB(db_path)
+    db = get_db(db_path)
     sync_universe(db)
     tickers = [t for t, _ in db.list_universe(enabled_only=True)]
     if top_n:
@@ -584,7 +573,6 @@ def audit(
     """Audit weekly pick math, provenance, and fallback usage."""
     from pathlib import Path
     import csv
-    from massive_tracker.store import DB
 
     REPORT_DIR = Path("data/reports")
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -592,7 +580,7 @@ def audit(
     audit_math_path = REPORT_DIR / "audit_math.csv"
     audit_md_path = REPORT_DIR / "audit_math.md"
 
-    db = DB(db_path)
+    db = get_db(db_path)
     picks = db.fetch_latest_weekly_picks()
     if expiry:
         picks = [
@@ -785,7 +773,6 @@ def stream(
         python -m massive_tracker.cli stream --tickers AAPL,MSFT
     """
     from .ws_client import MassiveWSClient, make_monitor_bar_handler
-    from .store import DB
     from .watchlist import Watchlists
     
     # Get symbols to watch
@@ -793,7 +780,7 @@ def stream(
         symbols = [t.strip().upper() for t in tickers.split(",")]
     else:
         # Use watchlist from DB
-        wl = Watchlists(DB(db_path))
+        wl = Watchlists(get_db(db_path))
         symbols = wl.list_tickers()
     
     if not symbols:
@@ -856,7 +843,7 @@ def propose_universe_candidates(
     import json
     from .oced import TICKERS as OCED_TICKERS
 
-    db = DB(db_path)
+    db = get_db(db_path)
     wl = Watchlists(db)
 
     candidates: list[str] = []
@@ -893,7 +880,7 @@ def approve_universe_candidates(
     Approve stored universe candidates and add to tickers table.
     If tickers param empty, approve all pending.
     """
-    db = DB(db_path)
+    db = get_db(db_path)
     wl = Watchlists(db)
 
     selected: list[str] = []

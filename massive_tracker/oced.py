@@ -12,7 +12,7 @@ import pandas as pd
 
 
 from .config import CFG
-from .store import DB
+from .store import get_db
 
 
 HAVE_MASSIVE = True
@@ -639,7 +639,7 @@ def run_oced_scan(
     lookback_days: int = 60,
     progress_callback: Optional[callable] = None,
 ) -> List[Dict[str, Any]]:
-    db = DB(db_path)
+    db = get_db(db_path)
     run_ts = _get_now_str()
     symbols = [t.upper().strip() for t in (tickers or TICKERS)]
 

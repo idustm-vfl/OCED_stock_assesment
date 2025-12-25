@@ -112,8 +112,8 @@ def load_runtime_config() -> RuntimeConfig:
 def load_flatfile_config(*, required: bool = True) -> FlatfileConfig | None:
     """Load optional Massive flatfile (S3) credentials from env."""
 
-    access_key = _first_env("MASSIVE_KEY_ID")
-    secret_key = _first_env("MASSIVE_API_KEY")
+    access_key = _first_env("MASSIVE_ACCESS_KEY", "AWS_ACCESS_KEY_ID")
+    secret_key = _first_env("MASSIVE_SECRET_KEY", "AWS_SECRET_ACCESS_KEY")
     
     if not access_key or not secret_key:
         if required:

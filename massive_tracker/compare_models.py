@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import List, Dict
 
-from .store import DB
+from .store import get_db
 from .summary import MODEL_COMPARE_PATH
 
 
@@ -62,7 +62,7 @@ def _promote_variant(picks: list[dict], *, seed: float, top_n: int, mode: str) -
 
 
 def run_compare(db_path: str = "data/sqlite/tracker.db", seed: float = 9300.0, top_n: int = 10) -> dict:
-    db = DB(db_path)
+    db = get_db(db_path)
     picks = db.fetch_latest_weekly_picks()
     baseline = _promote_variant(picks, seed=seed, top_n=top_n, mode="baseline")
     gated = _promote_variant(picks, seed=seed, top_n=top_n, mode="gated")

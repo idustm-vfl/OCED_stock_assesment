@@ -36,7 +36,7 @@ from typing import Any, Dict, Optional, Tuple, List
 
 
 from .config import CFG
-from .store import DB
+from .store import get_db
 from .watchlist import Watchlists
 from .options_features import PositionCC, MarketCC, compute_cc_scenarios
 from .signals import compute_signal_features
@@ -416,7 +416,7 @@ def run_monitor(
     One pass over all OPEN contracts.
     Logs per-contract scenario payloads + prints a one-line summary per contract.
     """
-    db = DB(db_path)
+    db = get_db(db_path)
     wl = Watchlists(db)
 
     rows = wl.list_open_contracts()

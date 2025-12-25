@@ -1,7 +1,7 @@
-from massive_tracker.store import DB
+from massive_tracker.store import get_db
 import os
 
-db = DB("data/sqlite/tracker.db")
+db = get_db("data/sqlite/tracker.db")
 print(f"DB exists: {os.path.exists(db.path)}")
 
 with db.connect() as con:

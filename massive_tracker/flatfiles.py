@@ -10,36 +10,11 @@ import pandas as pd
 from botocore.config import Config as BotoConfig
 
 from .config import FlatfileConfig, load_flatfile_config
-from .store import DB
+from .store import get_db
+from .s3_flatfiles import MassiveS3
 
 DEFAULT_ENDPOINT = os.getenv("MASSIVE_S3_ENDPOINT", "https://files.massive.com")
 DEFAULT_BUCKET = os.getenv("MASSIVE_S3_BUCKET", "flatfiles")
-
-
-_flat_cfg_cache: FlatfileConfig | None = None
-
-
-def _get_cfg(cfg: FlatfileConfig | None = None, *, required: bool = True) -> FlatfileConfig:
-    global _flat_cfg_cache
-    if cfg:
-        return cfg
-    if _flat_cfg_cache:
-        return _flat_cfg_cache
-    _flat_cfg_cache = load_flatfile_config(required=required)
-    return _flat_cfg_cache
-
-
-def s3_client_from_cfg(cfg: FlatfileConfig | None = None):
-    cfg = _get_cfg(cfg)
-    session = boto3.Session(
-        aws_access_key_id=cfg.access_key,
-        aws_secret_access_key=cfg.secret_key,
-    )
-    return session.client(
-        "s3",
-        endpoint_url=cfg.endpoint or DEFAULT_ENDPOINT,
-        config=BotoConfig(signature_version="s3v4"),
-    )
 
 
 def _date_from_str(s: str) -> dt.date:
@@ -51,16 +26,18 @@ def _key_for_date(dataset_prefix: str, d: dt.date) -> str:
 
 
 def download_key(key: str, out_path: Path, cfg: FlatfileConfig | None = None) -> Path:
-    cfg = _get_cfg(cfg)
+    if cfg is None:
+        cfg = load_flatfile_config(required=True)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    client = s3_client_from_cfg(cfg)
+    s3 = MassiveS3(cfg)
     bucket = cfg.bucket or DEFAULT_BUCKET
-    client.download_file(bucket, key, str(out_path))
+    s3.download(bucket, key, str(out_path))
     return out_path
 
 
 def download_range(dataset_prefix: str, start_date: str, end_date: str, out_dir: Path | str = "data/flatfiles", cfg: FlatfileConfig | None = None) -> List[Path]:
-    cfg = _get_cfg(cfg)
+    if cfg is None:
+        cfg = load_flatfile_config(required=True)
     out_dir = Path(out_dir)
     start = _date_from_str(start_date)
     end = _date_from_str(end_date)
@@ -85,16 +62,14 @@ def download_range(dataset_prefix: str, start_date: str, end_date: str, out_dir:
 
 
 def list_keys(prefix: str, year: int, month: int, cfg: FlatfileConfig | None = None) -> List[str]:
-    cfg = _get_cfg(cfg)
-    client = s3_client_from_cfg(cfg)
+    if cfg is None:
+        cfg = load_flatfile_config(required=True)
+    s3 = MassiveS3(cfg)
     bucket = cfg.bucket or DEFAULT_BUCKET
     full_prefix = f"{prefix}/{year:04d}/{month:02d}/"
-    paginator = client.get_paginator("list_objects_v2")
-    keys: List[str] = []
-    for page in paginator.paginate(Bucket=bucket, Prefix=full_prefix):
-        for obj in page.get("Contents", []):
-            keys.append(obj["Key"])
-    return keys
+    # Use s3.list_objects and extract keys
+    objs = s3.list_objects(bucket, full_prefix)
+    return [obj.key for obj in objs]
 
 
 # --------------------
@@ -213,7 +188,7 @@ def load_option_file(path: Path, db_path: str, table: str, ts_hint: Optional[str
             )
         )
 
-    db = DB(db_path)
+    db = get_db(db_path)
     db.insert_option_bars(table, rows)
     return len(rows)
 
@@ -227,7 +202,7 @@ def load_stock_file(
     source: str = "flatfile:stocks_day_aggs",
 ) -> int:
     df_iter = pd.read_csv(path, chunksize=200_000)
-    db = DB(db_path)
+    db = get_db(db_path)
     wanted = {t.upper().strip() for t in tickers or [] if t}
     total = 0
 
@@ -286,7 +261,7 @@ def _realized_vol(closes: List[float]) -> Optional[float]:
 
 def build_strike_candidates(underlying: str, expiry: str, date: str, *, db_path: str = "data/sqlite/tracker.db") -> List[Dict[str, object]]:
     ticker = underlying.upper().strip()
-    db = DB(db_path)
+    db = get_db(db_path)
     day_rows: List[tuple] = []
     minute_rows: List[tuple] = []
     with db.connect() as con:
@@ -378,7 +353,6 @@ def build_strike_candidates(underlying: str, expiry: str, date: str, *, db_path:
 
 
 __all__ = [
-    "s3_client_from_cfg",
     "download_key",
     "download_range",
     "list_keys",

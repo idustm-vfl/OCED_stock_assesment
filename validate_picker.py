@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from massive_tracker.store import DB
+from massive_tracker.store import get_db
 from massive_tracker.config import print_key_status
 
 
@@ -32,7 +32,7 @@ def validate_picks(db_path: str = "data/sqlite/tracker.db") -> bool:
     print_key_status()
     print()
     
-    db = DB(db_path)
+    db = get_db(db_path)
     picks = db.fetch_latest_weekly_picks()
     
     if not picks:
@@ -140,7 +140,7 @@ def validate_picks(db_path: str = "data/sqlite/tracker.db") -> bool:
 
 def validate_missing_table(db_path: str = "data/sqlite/tracker.db") -> None:
     """Show weekly_pick_missing entries."""
-    db = DB(db_path)
+    db = get_db(db_path)
     missing = db.fetch_latest_weekly_missing()
     
     if missing:
