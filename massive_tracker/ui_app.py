@@ -1,618 +1,226 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import List
-from datetime import datetime
 import sys
+import time
+import json
+from pathlib import Path
+from datetime import datetime
 
-import streamlit as st
 import pandas as pd
+import streamlit as st
+import requests
 
-# Ensure project root is importable when launched via `streamlit run massive_tracker/ui_app.py`
+# Ensure project root is importable
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from massive_tracker.monitor import run_monitor
-from massive_tracker.picker import run_weekly_picker
-from massive_tracker.promotion import promote_from_weekly_picks
-from massive_tracker.summary import SUMMARY_PATH, write_summary
-from massive_tracker.watchlist import Watchlists
 from massive_tracker.store import DB
-from massive_tracker.ws_client import MassiveWSClient, make_monitor_bar_handler
 from massive_tracker.config import CFG, mask5
-from massive_tracker.stock_ml import run_stock_ml
 from massive_tracker.universe import sync_universe
-from massive_tracker.compare_models import run_compare
 from massive_tracker.flatfile_manager import FlatfileManager
 from massive_tracker.oced import run_oced_scan
+from massive_tracker.picker import run_weekly_picker
+from massive_tracker.monitor import run_monitor
+from massive_tracker.summary import write_summary
+from massive_tracker.watchlist import Watchlists
 
+# --- UI CONSTANTS ---
+THEME_CSS = """
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap');
+    
+    :root {
+        --primary: #00ffa3;
+        --bg-deep: #0a0b10;
+        --panel: #161a23;
+        --border: rgba(255,255,255,0.08);
+        --text-main: #e2e8f0;
+        --text-dim: #94a3b8;
+    }
 
-DEFAULT_UNIVERSE = [
-    # ETFs
-    "SPY", "QQQ", "DIA", "IWM", "XLF", "XLE", "XLK",
-    # Core tech / large
-    "AAPL", "MSFT", "GOOG", "AMZN", "META", "NVDA",
-    # Semi / chips
-    "TSM", "AVGO", "ASML", "TXN", "ARM", "MRVL",
-    # Financial / infra
-    "BAC", "WFC", "CSCO", "IBM", "PYPL",
-    # Platform / growth / fintech
-    "UBER", "SHOP", "SOFI", "HOOD", "AFRM", "PLTR",
-    # Crypto / miners / exchange
-    "COIN", "RIOT", "MARA",
-    # EV
-    "TSLA", "RIVN",
-    # Small/spec
-    "CLOV",
-]
+    .stApp {
+        background-color: var(--bg-deep);
+        color: var(--text-main);
+        font-family: 'Inter', sans-serif;
+    }
 
-DEFAULT_DB_PATH = "data/sqlite/tracker.db"
+    [data-testid="stSidebar"] {
+        background-color: var(--panel);
+        border-right: 1px solid var(--border);
+    }
 
+    .metric-card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        padding: 1rem;
+        border-radius: 8px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }
 
-def _apply_theme() -> None:
-    st.set_page_config(
-        page_title="OCED Tracker",
-        page_icon="📈",
-        layout="wide",
-    )
-    st.markdown(
-        """
-        <style>
-        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap');
-        :root {
-            --bg: radial-gradient(circle at 20% 20%, rgba(71, 199, 253, 0.15), transparent 35%),
-                  radial-gradient(circle at 80% 0%, rgba(255, 102, 146, 0.12), transparent 30%),
-                  #0b1224;
-            --panel: rgba(255, 255, 255, 0.05);
-            --card: rgba(255, 255, 255, 0.08);
-            --accent: #7cf0c6;
-            --text: #e8edf7;
-            --muted: #9fb3d9;
-        }
-        html, body, [data-testid="stApp"] {
-            background: var(--bg);
-            color: var(--text);
-            font-family: 'Space Grotesk', 'Helvetica Neue', sans-serif;
-        }
-        [data-testid="stHeader"] {background: transparent;}
-        .block-container {padding-top: 1.5rem;}
-        h1, h2, h3, h4 {color: var(--text); letter-spacing: -0.02em;}
-        .metric-card {background: var(--card); padding: 1rem 1.25rem; border-radius: 14px; border: 1px solid rgba(255,255,255,0.08);}
-        .pill {background: rgba(124, 240, 198, 0.12); color: var(--accent); padding: 0.25rem 0.75rem; border-radius: 999px; font-weight: 600; border: 1px solid rgba(124, 240, 198, 0.3);}
-        button[kind="primary"], .stButton>button {background: linear-gradient(120deg, #7cf0c6, #8f9bff); color: #0b1224; font-weight: 700; border: none; border-radius: 12px; box-shadow: 0 12px 30px rgba(124, 240, 198, 0.2);}
-        
-        /* High-density table styles */
-        div[data-testid="stDataFrame"] > div {
-            border-radius: 8px;
-            overflow: hidden;
-        }
-        [data-testid="stExpander"] {
-            border: 1px solid rgba(255,255,255,0.08);
-            background: var(--panel);
-            border-radius: 12px;
-        }
-        .contract-id {
-            font-family: monospace;
-            background: rgba(143, 155, 255, 0.15);
-            padding: 2px 6px;
-            border-radius: 4px;
-            color: #8f9bff;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    .status-badge {
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
 
+    .badge-ok { background: rgba(0, 255, 163, 0.1); color: #00ffa3; border: 1px solid rgba(0, 255, 163, 0.3); }
+    .badge-warn { background: rgba(255, 171, 0, 0.1); color: #ffab00; border: 1px solid rgba(255, 171, 0, 0.3); }
 
-def _load_watchlist(db_path: str) -> List[str]:
+    code, .mono {
+        font-family: 'IBM Plex Mono', monospace;
+    }
+
+    h1, h2, h3 {
+        font-weight: 700;
+        letter-spacing: -0.02em;
+    }
+
+    .stDataFrame {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+    }
+</style>
+"""
+
+# --- HELPERS ---
+
+def get_stats(db_path):
+    db = DB(db_path)
     try:
-        wl = Watchlists(DB(db_path))
-        if not wl.list_tickers():
-            for t in DEFAULT_UNIVERSE:
-                wl.add_ticker(t)
-        return wl.list_tickers()
-    except Exception as e:
-        st.warning(f"Could not load watchlist: {e}")
-        return []
-
-
-def _latest_weekly_picks(db_path: str) -> list[dict]:
-    try:
-        return DB(db_path).fetch_latest_weekly_picks()
-    except Exception:
-        return []
-
-
-def _latest_contract_health(db_path: str) -> list[dict]:
-    try:
-        return DB(db_path).fetch_latest_option_features()
-    except Exception:
-        return []
-
-
-def _oced_status(db_path: str) -> dict:
-    try:
-        db = DB(db_path)
+        with db.connect() as con:
+            univ_count = con.execute("SELECT count(*) FROM universe").fetchone()[0]
+            oced_count = con.execute("SELECT count(*) FROM oced_scores").fetchone()[0]
+            pick_count = con.execute("SELECT count(*) FROM weekly_picks").fetchone()[0]
+            price_count = con.execute("SELECT count(*) FROM market_last").fetchone()[0]
         return {
-            "stats": db.get_oced_stats(),
-            "top": db.get_latest_oced_top(n=10),
+            "Universe": univ_count,
+            "Scores": oced_count,
+            "Picks": pick_count,
+            "Prices": price_count
         }
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def _ml_status(db_path: str) -> dict:
-    try:
-        return DB(db_path).get_ml_status()
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def _cost_bucket(cost: float | None) -> str:
-    if cost is None:
-        return "unknown"
-    try:
-        val = float(cost)
     except Exception:
-        return "unknown"
-    if val <= 5000:
-        return "≤ $5k"
-    if val <= 10000:
-        return "≤ $10k"
-    if val <= 25000:
-        return "≤ $25k"
-    return "> $25k"
+        return {"Error": "DB Error"}
 
-
-def _start_stream(
-    db_path: str,
-    tickers_raw: str,
-    monitor_triggers: bool,
-    near_strike_pct: float,
-    rapid_up_pct: float,
-    cooldown_sec: int,
-    cache_market_last: bool,
-) -> None:
-    if st.session_state.get("stream_running"):
-        st.info("Stream already running.")
-        return
-
-    symbols = [t.strip().upper() for t in tickers_raw.split(",") if t.strip()]
-    if not symbols:
-        symbols = _load_watchlist(db_path)
-
-    if not symbols:
-        st.error("No tickers provided and watchlist is empty.")
-        return
-
+def fetch_raw_json(ticker, endpoint_type="stock"):
+    params = {'apiKey': CFG.massive_api_key, 'limit': 1}
     try:
-        client = MassiveWSClient(api_key=CFG.massive_api_key, market_cache_db_path=db_path if cache_market_last else None)
+        if endpoint_type == "stock":
+            # Just a recent sample
+            url = f'https://api.massive.com/v2/aggs/ticker/{ticker.upper()}/range/1/day/2024-12-01/2024-12-10'
+        else:
+            url = 'https://api.massive.com/v3/reference/options/contracts'
+            params['underlying_ticker'] = ticker.upper()
         
-        if monitor_triggers:
-            handler = make_monitor_bar_handler(
-                db_path=db_path,
-                near_strike_pct=near_strike_pct,
-                rapid_up_pct=rapid_up_pct,
-                cooldown_sec=cooldown_sec,
-            )
-            client.on_aggregate_minute = handler
-        client.subscribe_stocks(symbols)
-        thread = client.run_background()
+        r = requests.get(url, params=params)
+        return r.status_code, r.json()
     except Exception as e:
-        st.error(f"Stream failed: {e}")
-        return
+        return 500, {"error": str(e)}
 
-    st.session_state.stream_client = client
-    st.session_state.stream_thread = thread
-    st.session_state.stream_running = True
-    st.session_state.stream_symbols = symbols
-    st.success(f"Streaming {', '.join(symbols)}")
+# --- MAIN APP ---
 
+def main():
+    st.set_page_config(page_title="OCED HIGH-DENSITY", layout="wide")
+    st.markdown(THEME_CSS, unsafe_allow_html=True)
 
-def _stop_stream() -> None:
-    client = st.session_state.get("stream_client")
-    thread = st.session_state.get("stream_thread")
-
-    if not client:
-        st.info("No active stream.")
-        return
-
-    try:
-        client.close()
-    except Exception:
-        pass
-
-    if thread:
-        thread.join(timeout=2)
-
-    st.session_state.stream_client = None
-    st.session_state.stream_thread = None
-    st.session_state.stream_running = False
-    st.session_state.stream_symbols = []
-    st.success("Stream stopped.")
-
-
-def _render_watchlist(watchlist: List[str]) -> None:
-    cols = st.columns(3)
-    cols[0].metric("Watchlist size", len(watchlist))
-    cols[1].metric("Stream status", "Running" if st.session_state.get("stream_running") else "Idle")
-    cols[2].metric("Symbols streaming", ", ".join(st.session_state.get("stream_symbols", [])) or "—")
-
-
-def main() -> None:
-    _apply_theme()
-    sync_universe(DB(DEFAULT_DB_PATH))
-    if "stream_client" not in st.session_state:
-        st.session_state.stream_client = None
-    if "stream_thread" not in st.session_state:
-        st.session_state.stream_thread = None
-    if "stream_running" not in st.session_state:
-        st.session_state.stream_running = False
-    if "stream_symbols" not in st.session_state:
-        st.session_state.stream_symbols = []
-    if "last_status" not in st.session_state:
-        st.session_state.last_status = "Ready"
-    if "oced_status" not in st.session_state:
-        st.session_state.oced_status = None
-    if "ml_status" not in st.session_state:
-        st.session_state.ml_status = None
-    if "promotions" not in st.session_state:
-        st.session_state.promotions = []
-
-    st.title("OCED Tracker — One Pager")
-    st.caption("Operate the pipeline without the CLI: stream ➜ picks ➜ monitor ➜ summary.")
-
-    # Sidebar layout
+    db_path = "data/sqlite/tracker.db"
+    db = DB(db_path)
+    
+    # --- SIDEBAR: DATA HEALTH ---
     with st.sidebar:
-        st.header("Operations")
+        st.title("🛡️ Data Health")
+        stats = get_stats(db_path)
         
-        # Runtime Status
-        st.subheader("Runtime Status")
-        import os
-        st.caption(f"MASSIVE_API_KEY: {mask5(os.getenv('MASSIVE_API_KEY'))}")
-        st.caption(f"MASSIVE_ACCESS_KEY: {mask5(os.getenv('MASSIVE_ACCESS_KEY'))}")
-        st.caption(f"MASSIVE_KEY_ID: {mask5(os.getenv('MASSIVE_KEY_ID'))}")
-        st.caption(f"MASSIVE_SECRET_KEY: {mask5(os.getenv('MASSIVE_SECRET_KEY'))}")
-        st.divider()
-        
-        db_path = st.text_input("SQLite DB path", value=DEFAULT_DB_PATH)
-        tickers_raw = st.text_input("Tickers (comma-separated)", value="")
-        monitor_triggers = st.checkbox("Trigger monitor on near-strike / rapid-up", value=True)
-        near_strike_pct = st.slider("Near-strike pct", min_value=0.01, max_value=0.10, value=0.03, step=0.01)
-        rapid_up_pct = st.slider("Rapid-up pct", min_value=0.01, max_value=0.10, value=0.05, step=0.01)
-        cooldown_sec = st.slider("Trigger cooldown (sec)", min_value=60, max_value=900, value=300, step=30)
-        cache_market_last = st.checkbox("Cache bars to market_last", value=True)
+        for label, val in stats.items():
+            cols = st.columns([2, 1])
+            cols[0].write(label)
+            if isinstance(val, int) and val > 0:
+                cols[1].markdown(f'<span class="status-badge badge-ok">{val}</span>', unsafe_allow_html=True)
+            else:
+                cols[1].markdown(f'<span class="status-badge badge-warn">{val}</span>', unsafe_allow_html=True)
 
-        if st.button("Sync Universe"):
-            try:
-                synced = sync_universe(DB(db_path))
-                st.success(f"Universe synced ({synced} rows)")
-            except Exception as e:
-                st.error(f"Sync failed: {e}")
-                
-        if st.button("Sync All (Univ + History + Scores)", help="Downloads history and calculates OCED scores. Takes a few minutes."):
-            with st.status("Performing Full Data Sync...") as status:
+        st.markdown("---")
+        st.subheader("Sync Controls")
+        st.caption("Rate-limited: 5 calls/min")
+        
+        if st.button("🚀 FULL SYNC (Univ + Hist + Score)", help="Syncs all data with 13s delays between tickers. This will take a while."):
+            with st.status("Performing throttled sync...") as status:
                 try:
-                    st.write("1. Syncing Universe from DB...")
-                    sync_universe(DB(db_path))
+                    st.write("1. Syncing Universe...")
+                    sync_universe(db)
                     
-                    st.write("2. Syncing Historical Flatfiles (S3)...")
-                    # Try-catch inside because S3 might be slow/fail
+                    st.write("2. Syncing Historical Flatfiles...")
                     mgr = FlatfileManager(db_path=db_path)
-                    mgr.sync_universe(days_back=60, update_existing=True)
+                    mgr.sync_universe(days_back=60)
                     
-                    st.write("3. Calculating OCED Scores (Scanning)...")
+                    st.write("3. Running OCED Scan (Throttled)...")
                     run_oced_scan(db_path=db_path)
                     
-                    status.update(label="Full Sync Complete!", state="complete")
-                    st.success("Data loaded. You can now build picks.")
+                    status.update(label="Sync Complete!", state="complete")
+                    st.success("All data synchronized.")
                     st.rerun()
                 except Exception as e:
                     status.update(label=f"Sync Failed: {e}", state="error")
-                    st.error(f"Sync error: {e}")
-
-        if st.button("Start Stream"):
-            _start_stream(
-                db_path,
-                tickers_raw,
-                monitor_triggers,
-                near_strike_pct,
-                rapid_up_pct,
-                cooldown_sec,
-                cache_market_last,
-            )
-            st.session_state.last_status = "Stream started"
-        if st.button("Stop Stream"):
-            _stop_stream()
-            st.session_state.last_status = "Stream stopped"
-
-        if st.button("Build Weekly Picks"):
-            try:
-                picks = run_weekly_picker(db_path=db_path, top_n=10)
-                st.success(f"Wrote {len(picks)} picks")
-                st.session_state.last_status = "Weekly picks built"
-            except Exception as e:
-                st.error(f"Picker failed: {e}")
-                st.session_state.last_status = f"Picker failed: {e}"
-
-        if st.button("Run Monitor"):
-            try:
-                run_monitor(db_path=db_path)
-                st.success("Monitor complete")
-                st.session_state.last_status = "Monitor complete"
-            except Exception as e:
-                st.error(f"Monitor failed: {e}")
-                st.session_state.last_status = f"Monitor failed: {e}"
-
-        if st.button("Generate Summary"):
-            try:
-                write_summary(db_path=db_path)
-                st.success(f"Summary regenerated at {SUMMARY_PATH}")
-                st.session_state.last_status = "Summary generated"
-            except Exception as e:
-                st.error(f"Summary failed: {e}")
-                st.session_state.last_status = f"Summary failed: {e}"
-
-        if st.button("OCED Status"):
-            st.session_state.oced_status = _oced_status(db_path)
-            st.session_state.last_status = "OCED status refreshed"
-
-        if st.button("ML Status"):
-            st.session_state.ml_status = _ml_status(db_path)
-            st.session_state.last_status = "ML status refreshed"
-
-        if st.button("Run Stock ML (vol/regime)"):
-            try:
-                rows = run_stock_ml(db_path=db_path)
-                st.success(f"Computed {len(rows)} stock ML rows")
-                st.session_state.last_status = "Stock ML computed"
-            except Exception as e:
-                st.error(f"Stock ML failed: {e}")
-                st.session_state.last_status = f"Stock ML failed: {e}"
-
-        if st.button("Run Daily Pipeline"):
-            try:
-                with st.spinner("Building picks and monitoring..."):
-                    picks = run_weekly_picker(db_path=db_path, top_n=10)
-                    if not picks:
-                        st.warning("No picks generated. Ensure you have run 'Sync All' to populate OCED scores.")
-                    run_monitor(db_path=db_path)
-                    write_summary(db_path=db_path)
-                st.success(f"Daily pipeline complete | picks={len(picks)}")
-                st.session_state.last_status = "Daily pipeline complete"
-                st.rerun()
-            except Exception as e:
-                st.error(f"Daily pipeline failed: {e}")
-                st.session_state.last_status = f"Daily pipeline failed: {e}"
-
-        lane_choice = st.selectbox("Promotion lane", ["SAFE", "SAFE_HIGH", "AGGRESSIVE", "ALL"], index=1)
-        seed_val = st.number_input("Seed ($)", min_value=1000.0, max_value=100000.0, value=9300.0, step=500.0)
-        topn_val = st.number_input("Promote top N", min_value=1, max_value=20, value=3, step=1)
-        if st.button("Approve Weekly Picks → Active Contracts"):
-            try:
-                results = promote_from_weekly_picks(db_path=db_path, seed=seed_val, lane=lane_choice, top_n=int(topn_val))
-                promoted = [r for r in results if not r.skipped]
-                st.success(f"Promoted {len(promoted)} picks")
-                st.session_state.last_status = "Picks promoted"
-            except Exception as e:
-                st.error(f"Promotion failed: {e}")
-                st.session_state.last_status = f"Promotion failed: {e}"
-
-        if st.button("Refresh Prices (WebSocket Snapshot)"):
-            st.info("Prices update via live stream; start stream to refresh caches.")
-
-        if st.button("Run Compare"):
-            try:
-                out = run_compare(db_path=db_path, seed=seed_val, top_n=int(topn_val))
-                st.success(f"Compare done; changes={len(out.get('decision_changes', []))}")
-            except Exception as e:
-                st.error(f"Compare failed: {e}")
-
-        if st.button("Load Promotions Log"):
-            try:
-                st.session_state.promotions = DB(db_path).list_promotions(limit=100)
-            except Exception as e:
-                st.error(f"Load promotions failed: {e}")
+                    st.error(str(e))
 
         st.markdown("---")
-        st.header("Universe")
-        wl = Watchlists(DB(db_path))
-        current = wl.list_tickers()
-        st.caption(f"{len(current)} enabled")
+        st.subheader("Quick Peek")
+        peek_ticker = st.text_input("Ticker to Peek", value="AAPL").upper()
+        peek_type = st.radio("Type", ["Stock Agg", "Option Ref"])
+        if st.button("Inspect Raw JSON"):
+            code, data = fetch_raw_json(peek_ticker, "stock" if peek_type == "Stock Agg" else "option")
+            st.code(f"HTTP {code}\n{json.dumps(data, indent=2)}", language="json")
 
-        new_raw = st.text_input("Add tickers (comma-separated)", value="")
-        new_cat = st.text_input("Category (optional)", value="")
-        if st.button("Add Tickers"):
-            for t in [x.strip().upper() for x in new_raw.split(",") if x.strip()]:
-                wl.add_ticker(t)
-                if new_cat:
-                    DB(db_path).upsert_universe([(t, new_cat)])
-            st.session_state.last_status = "Tickers added"
-            st.rerun()
+    # --- MAIN DASHBOARD ---
+    st.title("📈 OCED Dashboard")
+    
+    tab1, tab2, tab3 = st.tabs(["🎯 Top Picks", "🧬 Universe Intelligence", "💼 Active Contracts"])
 
-        remove_t = st.selectbox("Remove ticker", options=[""] + current)
-        if st.button("Remove Selected") and remove_t:
-            wl.remove_ticker(remove_t)
-            st.session_state.last_status = f"Removed {remove_t}"
-            st.rerun()
-
-        st.markdown("---")
-        st.header("Active Contracts")
-        with st.form("add_contract_form"):
-            ct_ticker = st.text_input("Ticker", value="").upper().strip()
-            ct_expiry = st.date_input("Expiry")
-            ct_right = st.selectbox("Right", ["C", "P"], index=0)
-            ct_strike = st.number_input("Strike", min_value=0.0, step=0.5)
-            ct_qty = st.number_input("Qty", min_value=1, step=1, value=1)
-            ct_shares = st.number_input("Shares", min_value=0, step=10, value=100)
-            ct_basis = st.number_input("Stock basis", min_value=0.0, step=0.01, value=0.0)
-            ct_prem = st.number_input("Premium received", min_value=0.0, step=0.01, value=0.0)
-            submitted = st.form_submit_button("Add Contract")
-        if submitted and ct_ticker:
-            try:
-                wl.add_contract(
-                    ct_ticker,
-                    ct_expiry.strftime("%Y-%m-%d"),
-                    ct_right,
-                    float(ct_strike),
-                    int(ct_qty),
-                    shares=int(ct_shares),
-                    stock_basis=float(ct_basis),
-                    premium_open=float(ct_prem),
-                )
-                st.success("Contract added")
-                st.session_state.last_status = "Contract added"
-                st.rerun()
-            except Exception as e:
-                st.error(f"Add contract failed: {e}")
-
-        open_rows = wl.list_open_contracts()
-        st.caption("Open contracts")
-        if open_rows:
-            # Convert to DF with proper headers
-            df_open = pd.DataFrame(open_rows, columns=["ID", "Ticker", "Expiry", "Right", "Strike", "Qty", "Opened"])
-            df_open["Contract"] = df_open.apply(lambda r: f"{r['Ticker']} {r['Right']}{r['Strike']:.1f} {r['Expiry']}", axis=1)
-            st.dataframe(
-                df_open[["ID", "Contract", "Qty", "Opened"]],
-                use_container_width=True,
-                hide_index=True,
-                height=250,
-                column_config={
-                    "ID": st.column_config.NumberColumn(width="small"),
-                    "Contract": st.column_config.TextColumn("Contract (Asset ID)", width="medium"),
-                    "Qty": st.column_config.NumberColumn(width="small"),
-                }
-            )
-        close_id = st.number_input("Close contract id", min_value=0, step=1, value=0)
-        if st.button("Close Contract") and close_id:
-            try:
-                wl.close_contract(int(close_id))
-                st.session_state.last_status = f"Closed contract {int(close_id)}"
-                st.rerun()
-            except Exception as e:
-                st.error(f"Close failed: {e}")
-
-    # Main panel
-    watchlist = _load_watchlist(db_path)
-    _render_watchlist(watchlist)
-
-    st.markdown("---")
-    st.subheader("Picks & Health")
-
-    picks = _latest_weekly_picks(db_path)
-    health = _latest_contract_health(db_path)
-    db = DB(db_path)
-    universe_rows = db.list_universe(enabled_only=True)
-    prices = db.get_latest_prices([t for t, _ in universe_rows])
-    price_map = {p["ticker"]: p for p in prices}
-
-    col_main, col_side = st.columns([3, 2])
-    with col_main:
-        st.markdown("**Latest Weekly Picks**")
+    with tab1:
+        st.subheader("Weekly OCED Picks")
+        picks = db.fetch_latest_weekly_picks()
         if picks:
             df_picks = pd.DataFrame(picks)
-            # Create a more descriptive Bucket/ID column
-            df_picks["Asset"] = df_picks.apply(lambda r: f"{r['ticker']} {r.get('strike_source') or ''}", axis=1)
+            # Focus on relevant columns for "nice and tight" look
+            display_cols = ["ticker", "score", "rank", "price", "premium_status", "ts"]
+            st.dataframe(df_picks[display_cols], use_container_width=True, hide_index=True)
+        else:
+            st.info("No picks found. Run 'Sync All' or 'Build Picks' below.")
+        
+        if st.button("Build Picks from Scores"):
+            with st.spinner("Generating picks..."):
+                run_weekly_picker(db_path=db_path, top_n=10)
+                st.rerun()
+
+    with tab2:
+        st.subheader("Universe Data Hub")
+        scores = db.get_latest_oced_top(n=50)
+        if scores:
+            df_scores = pd.DataFrame(scores)
+            st.dataframe(df_scores, use_container_width=True, hide_index=True)
+        else:
+            st.warning("No scores found. Calculate scores via sidebar sync.")
+
+    with tab3:
+        st.subheader("Active Contract Monitoring")
+        wl = Watchlists(db)
+        open_contracts = wl.list_open_contracts()
+        if open_contracts:
+            df_ct = pd.DataFrame(open_contracts, columns=["ID", "Ticker", "Expiry", "Right", "Strike", "Qty", "Opened"])
+            st.dataframe(df_ct, use_container_width=True, hide_index=True)
             
-            buckets: dict[str, pd.DataFrame] = {}
-            for p_bucket in ["≤ $5k", "≤ $10k", "≤ $25k", "> $25k", "unknown"]:
-                # Match logic from _cost_bucket
-                mask = df_picks.apply(lambda r: _cost_bucket(r.get("pack_100_cost")), axis=1) == p_bucket
-                sub_df = df_picks[mask]
-                if not sub_df.empty:
-                    st.markdown(f"**{p_bucket}**")
-                    st.dataframe(
-                        sub_df[["ticker", "price", "prem_yield", "expiry", "strike", "pack_100_cost", "final_rank_score"]].sort_values("final_rank_score", ascending=False),
-                        use_container_width=True,
-                        hide_index=True,
-                        height=200,
-                        column_config={
-                            "price": st.column_config.NumberColumn(format="$%.2f"),
-                            "prem_yield": st.column_config.NumberColumn(format="%.2f%%"),
-                            "strike": st.column_config.NumberColumn(format="$%.1f"),
-                            "pack_100_cost": st.column_config.NumberColumn(format="$%.0f"),
-                            "final_rank_score": st.column_config.NumberColumn(format="%.2f"),
-                        }
-                    )
+            if st.button("Update Monitor Status"):
+                with st.spinner("Updating health..."):
+                    run_monitor(db_path=db_path)
+                    st.rerun()
         else:
-            st.info("No weekly picks yet.")
-
-        st.markdown("**Contract Health**")
-        if health:
-            df_h = pd.DataFrame(health)
-            # Combine for contract ID
-            df_h["Contract"] = df_h.apply(lambda r: f"{r['ticker']} {r['right']}{r['strike']:.1f} {r['expiry']}", axis=1)
-            cols_to_show = ["Contract", "stock_price", "option_mid", "spread_pct", "recommendation"]
-            st.dataframe(
-                df_h[cols_to_show],
-                use_container_width=True, 
-                hide_index=True,
-                height=300,
-                column_config={
-                    "stock_price": st.column_config.NumberColumn("Stock", format="$%.2f"),
-                    "option_mid": st.column_config.NumberColumn("Opt Mid", format="$%.2f"),
-                    "spread_pct": st.column_config.NumberColumn("Spread", format="%.1f%%"),
-                }
-            )
-        else:
-            st.info("No contract health snapshots yet.")
-
-        st.markdown("**Promotions Log (latest 100)**")
-        promos = st.session_state.get("promotions", [])
-        if promos:
-            st.dataframe(promos, use_container_width=True, height=240)
-        else:
-            st.caption("Load promotions log from sidebar.")
-
-    with col_side:
-        st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
-        st.markdown("**Last status**")
-        st.write(st.session_state.last_status)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        if st.session_state.oced_status:
-            st.markdown("**OCED Status**")
-            st.json(st.session_state.oced_status)
-        if st.session_state.ml_status:
-            st.markdown("**ML Status**")
-            st.json(st.session_state.ml_status)
-
-        if health:
-            alerts = [h for h in health if h.get("recommendation")]
-            st.markdown("**Alerts / Recommendations**")
-            if alerts:
-                st.dataframe(alerts, use_container_width=True, height=200)
-            else:
-                st.caption("No recommendations flagged yet.")
+            st.info("No active contracts. Add one in the Universe management section below.")
 
     st.markdown("---")
-    st.subheader("Universe Prices")
-    if universe_rows:
-        uni_rows = []
-        for t, cat in universe_rows:
-            entry = price_map.get(t)
-            uni_rows.append(
-                {
-                    "ticker": t,
-                    "category": cat,
-                    "price": entry.get("price") if entry else None,
-                    "source": entry.get("source") if entry else None,
-                }
-            )
-        st.dataframe(uni_rows, use_container_width=True, height=240)
-    else:
-        st.info("Universe empty; sync to populate.")
-
-    st.markdown("---")
-    st.subheader("Summary Preview")
-    if SUMMARY_PATH.exists():
-        st.markdown(SUMMARY_PATH.read_text(encoding="utf-8"))
-    else:
-        st.info("Generate summary to view content.")
-
-    st.markdown("<small class='pill'>Flow: stream ➜ picks ➜ monitor ➜ summary</small>", unsafe_allow_html=True)
-
+    st.header("Pipeline Status")
+    st.write(f"Massive API Key: `{mask5(CFG.massive_api_key)}` | Feed: `{CFG.ws_feed}`")
 
 if __name__ == "__main__":
     main()

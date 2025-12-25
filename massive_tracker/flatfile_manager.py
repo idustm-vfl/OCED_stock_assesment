@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
@@ -41,9 +42,10 @@ class FlatfileManager:
 
     def get_active_tickers(self) -> List[str]:
         """Get list of enabled tickers from universe."""
-        rows = self.db.con.execute(
-            "SELECT ticker FROM universe WHERE enabled=1 ORDER BY ticker"
-        ).fetchall()
+        with self.db.connect() as con:
+            rows = con.execute(
+                "SELECT ticker FROM universe WHERE enabled=1 ORDER BY ticker"
+            ).fetchall()
         return [r[0] for r in rows]
 
     def get_existing_tickers(self) -> List[str]:
@@ -188,7 +190,10 @@ class FlatfileManager:
             end_date = datetime.now()
             start_date = end_date - timedelta(days=days_back)
             
-            for ticker in sorted(tickers_to_add):
+            for i, ticker in enumerate(sorted(tickers_to_add)):
+                if i > 0:
+                    logger.info(f"Rate limiting... sleeping 13s (Call {i+1}/{len(tickers_to_add)})")
+                    time.sleep(13)
                 df = self.download_history(ticker, start_date, end_date)
                 if not df.empty:
                     self.append_to_flatfile(ticker, df, mode='overwrite')
@@ -219,6 +224,8 @@ class FlatfileManager:
                     
                     # Only fetch if there's a gap of more than 1 day
                     if (end_date - start_date).days >= 1:
+                        logger.info(f"Rate limiting... sleeping 13s for {ticker}")
+                        time.sleep(13)
                         logger.info(f"Updating {ticker}: {start_date.date()} to {end_date.date()}")
                         df = self.download_history(ticker, start_date, end_date)
                         if not df.empty:

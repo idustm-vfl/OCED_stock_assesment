@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 import pathlib
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -362,14 +363,16 @@ def get_ohlcv_daily(
 from .massive_client import get_stock_last_price
 
 def fetch_massive_quote_price(ticker: str) -> Optional[float]:
-    """Fetch current stock price via massive_client."""
-    if not (HAVE_MASSIVE and _massive_api_key()):
+    """Fetch current stock price via massive_client with plan-aware fallbacks."""
+    if not _massive_api_key():
         return None
 
     try:
+        from .massive_client import get_stock_last_price
         price, _, _ = get_stock_last_price(ticker)
         return price
-    except Exception:
+    except Exception as e:
+        print(f"[OCED] fetch_quote failed for {ticker}: {e}")
         return None
 
 
@@ -618,7 +621,10 @@ def run_oced_scan(
     start_date = today - dt.timedelta(days=lookback_days)
 
     rows: List[Dict[str, Any]] = []
-    for sym in symbols:
+    for i, sym in enumerate(symbols):
+        if i > 0:
+            print(f"[OCED] Rate limiting... sleeping 13s ({i+1}/{len(symbols)})")
+            time.sleep(13)
         quote_px = fetch_massive_quote_price(sym)
         if quote_px is not None:
             db.set_market_last(sym, run_ts, quote_px, source="massive_rest:last_trade")
