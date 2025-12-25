@@ -344,11 +344,52 @@ def fetch_ohlcv_massive_daily(
     return df.sort_values("date").reset_index(drop=True)
 
 
+def fetch_ohlcv_local_flatfile(ticker: str) -> Optional[pd.DataFrame]:
+    """Load and resample 1-minute flatfiles to daily bars."""
+    path = pathlib.Path(f"data/flatfiles/stocks_1m/{ticker.upper()}.csv")
+    if not path.exists():
+        return None
+    try:
+        df = pd.read_csv(path)
+        if df.empty or 'timestamp' not in df.columns:
+            return None
+            
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df.set_index('timestamp', inplace=True)
+        
+        # Resample 1m to 1D
+        daily = df.resample('D').agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum'
+        }).dropna()
+        
+        # Format to match Massive output
+        daily = daily.reset_index().rename(columns={'timestamp': 'date'})
+        return daily
+    except Exception as e:
+        print(f"[OCED] Local file read failed for {ticker}: {e}")
+        return None
+
+
 def get_ohlcv_daily(
     ticker: str,
     start_date: dt.date,
     end_date: dt.date,
 ) -> pd.DataFrame:
+    # 1. Try local flatfiles first (Resampled)
+    df = fetch_ohlcv_local_flatfile(ticker)
+    if df is not None and not df.empty:
+        # Filter for requested range
+        df['date_dt'] = pd.to_datetime(df['date']).dt.date
+        mask = (df['date_dt'] >= start_date) & (df['date_dt'] <= end_date)
+        filtered = df.loc[mask].copy()
+        if not filtered.empty:
+            return filtered[['date', 'open', 'high', 'low', 'close', 'volume']]
+
+    # 2. Fallback to Massive REST API
     df = fetch_ohlcv_massive_daily(ticker, start_date, end_date)
     if df is not None and not df.empty:
         return df
@@ -494,7 +535,7 @@ def analyze_ticker(
     except Exception:
         return None
 
-    if df.shape[0] < 40:
+    if df.shape[0] < 20:
         return None
 
     close = df["close"].values.astype(float)
@@ -609,9 +650,9 @@ def _persist_scores(db: DB, run_ts: str, rows: List[Dict[str, Any]]) -> None:
 
 def run_oced_scan(
     db_path: str = "data/sqlite/tracker.db",
-    *,
-    lookback_days: int = 365,
     tickers: Optional[List[str]] = None,
+    lookback_days: int = 60,
+    progress_callback: Optional[callable] = None,
 ) -> List[Dict[str, Any]]:
     db = DB(db_path)
     run_ts = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -621,9 +662,12 @@ def run_oced_scan(
     start_date = today - dt.timedelta(days=lookback_days)
 
     rows: List[Dict[str, Any]] = []
+    total = len(symbols)
     for i, sym in enumerate(symbols):
+        if progress_callback:
+            progress_callback(i + 1, total, sym)
         if i > 0:
-            print(f"[OCED] Rate limiting... sleeping 13s ({i+1}/{len(symbols)})")
+            print(f"[OCED] Rate limiting... sleeping 13s ({i+1}/{total})")
             time.sleep(13)
         quote_px = fetch_massive_quote_price(sym)
         if quote_px is not None:

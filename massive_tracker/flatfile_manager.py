@@ -166,12 +166,20 @@ class FlatfileManager:
             logger.info(f"Writing {ticker}.csv: {len(df)} bars")
             df.to_csv(csv_path, index=False)
 
-    def sync_universe(self, days_back: int = DAYS_LOOKBACK, update_existing: bool = True):
+    def sync_universe(
+        self,
+        days_back: int = DAYS_LOOKBACK,
+        update_existing: bool = True,
+        async_dl: bool = False,
+        progress_callback: Optional[callable] = None,
+    ) -> None:
         """Sync flat files with current universe.
         
         Args:
             days_back: Number of days of history to download for new tickers
             update_existing: If True, update existing files with recent data
+            async_dl: If True, use async downloading (not yet implemented)
+            progress_callback: Optional function(current, total, ticker)
         """
         active_tickers = self.get_active_tickers()
         existing_tickers = self.get_existing_tickers()
@@ -190,9 +198,12 @@ class FlatfileManager:
             end_date = datetime.now()
             start_date = end_date - timedelta(days=days_back)
             
+            total = len(tickers_to_add)
             for i, ticker in enumerate(sorted(tickers_to_add)):
+                if progress_callback:
+                    progress_callback(i + 1, total, ticker)
                 if i > 0:
-                    logger.info(f"Rate limiting... sleeping 13s (Call {i+1}/{len(tickers_to_add)})")
+                    logger.info(f"Rate limiting... sleeping 13s (Call {i+1}/{total})")
                     time.sleep(13)
                 df = self.download_history(ticker, start_date, end_date)
                 if not df.empty:

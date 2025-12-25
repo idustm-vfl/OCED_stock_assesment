@@ -148,15 +148,24 @@ def main():
         if st.button("🚀 FULL SYNC (Univ + Hist + Score)", help="Syncs all data with 13s delays between tickers. This will take a while."):
             with st.status("Performing throttled sync...") as status:
                 try:
+                    def on_progress(current, total, ticker, section="Syncing"):
+                        status.write(f"[{section}] {ticker} ({current} of {total})...")
+
                     st.write("1. Syncing Universe...")
                     sync_universe(db)
                     
                     st.write("2. Syncing Historical Flatfiles...")
                     mgr = FlatfileManager(db_path=db_path)
-                    mgr.sync_universe(days_back=60)
+                    mgr.sync_universe(
+                        days_back=60, 
+                        progress_callback=lambda c, t, tick: on_progress(c, t, tick, "Hist")
+                    )
                     
                     st.write("3. Running OCED Scan (Throttled)...")
-                    run_oced_scan(db_path=db_path)
+                    run_oced_scan(
+                        db_path=db_path,
+                        progress_callback=lambda c, t, tick: on_progress(c, t, tick, "OCED")
+                    )
                     
                     status.update(label="Sync Complete!", state="complete")
                     st.success("All data synchronized.")
