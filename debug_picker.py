@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 # Add the project root to sys.path
 sys.path.insert(0, os.getcwd())
 
-from massive_tracker.store import DB
+from massive_tracker.store import get_db
 from massive_tracker.picker import run_weekly_picker
 
 logging.basicConfig(level=logging.DEBUG)
@@ -14,7 +14,7 @@ logger = logging.getLogger("DEBUG_PICKER")
 
 if __name__ == "__main__":
     db_path = "data/sqlite/tracker.db"
-    db = DB(db_path)
+    db = get_db(db_path)
     
     # Check universe
     universe = db.list_universe(enabled_only=True)

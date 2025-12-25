@@ -1590,3 +1590,15 @@ class DB:
             "price_bars_series_len_top": bar_dist,
             "stock_ml_rows": stock_ml_count,
         }
+
+
+# Singleton DB access pattern
+_db_instance: DB | None = None
+
+
+def get_db(path: str = "data/sqlite/tracker.db") -> DB:
+    """Get singleton DB instance. Creates new instance if path changes."""
+    global _db_instance
+    if _db_instance is None or _db_instance.path != path:
+        _db_instance = DB(path)
+    return _db_instance

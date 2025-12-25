@@ -1,14 +1,14 @@
 import pandas as pd
 from massive_tracker.flatfile_manager import FlatfileManager
 from massive_tracker.oced import run_oced_scan
-from massive_tracker.store import DB
+from massive_tracker.store import get_db
 import logging
 
 logging.basicConfig(level=logging.INFO)
 
 def diagnose():
     db_path = "data/sqlite/tracker.db"
-    db = DB(db_path)
+    db = get_db(db_path)
     
     print("Checking Universe...")
     with db.connect() as con:

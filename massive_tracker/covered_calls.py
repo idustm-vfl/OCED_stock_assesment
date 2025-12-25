@@ -6,7 +6,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import json
 
 from .massive_client import get_option_chain_snapshot
-from .store import DB
+from .store import get_db
 
 # Default output location for downstream UI/summary consumption
 COVERED_CALLS_PATH = Path("data/reports/covered_calls.json")
@@ -31,7 +31,7 @@ def next_fridays(n: int = 2) -> List[str]:
 
 def load_spot_map(db_path: str, tickers: Iterable[str]) -> Dict[str, float]:
     """Load latest spot prices from sqlite market caches; quietly skip missing."""
-    db = DB(db_path)
+    db = get_db(db_path)
     prices = db.get_latest_prices(list(tickers))
     out: Dict[str, float] = {}
     for row in prices:

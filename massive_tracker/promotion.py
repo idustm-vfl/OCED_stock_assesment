@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timedelta
 from typing import List, Dict
 
-from .store import DB
+from .store import get_db
 from .watchlist import Watchlists
 from .stock_ml import select_strike
 
@@ -38,7 +38,7 @@ def promote_from_weekly_picks(
 ) -> List[PromotionResult]:
     """Promote picks with gates and log reasons into promotions table."""
 
-    db = DB(db_path)
+    db = get_db(db_path)
     wl = Watchlists(db)
     picks = db.fetch_latest_weekly_picks()
 
