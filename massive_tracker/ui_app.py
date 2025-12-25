@@ -192,7 +192,7 @@ def main():
             df_picks = pd.DataFrame(picks)
             # Focus on relevant columns for "nice and tight" look
             display_cols = ["ticker", "score", "rank", "price", "premium_status", "ts"]
-            st.dataframe(df_picks[display_cols], use_container_width=True, hide_index=True)
+            st.dataframe(df_picks[display_cols], width=None, hide_index=True)
         else:
             st.info("No picks found. Run 'Sync All' or 'Build Picks' below.")
         
@@ -206,7 +206,7 @@ def main():
         scores = db.get_latest_oced_top(n=50)
         if scores:
             df_scores = pd.DataFrame(scores)
-            st.dataframe(df_scores, use_container_width=True, hide_index=True)
+            st.dataframe(df_scores, width=None, hide_index=True)
         else:
             st.warning("No scores found. Calculate scores via sidebar sync.")
 
@@ -216,7 +216,7 @@ def main():
         open_contracts = wl.list_open_contracts()
         if open_contracts:
             df_ct = pd.DataFrame(open_contracts, columns=["ID", "Ticker", "Expiry", "Right", "Strike", "Qty", "Opened"])
-            st.dataframe(df_ct, use_container_width=True, hide_index=True)
+            st.dataframe(df_ct, width=None, hide_index=True)
             
             if st.button("Update Monitor Status"):
                 with st.spinner("Updating health..."):

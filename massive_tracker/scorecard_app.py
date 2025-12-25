@@ -87,7 +87,7 @@ tabs = st.tabs(["🚀 Top Picks", "📊 OCED Scores", "📁 Inventory"])
 with tabs[0]:
     df_picks = load_picks_data()
     if not df_picks.empty:
-        st.dataframe(df_picks, use_container_width=True, hide_index=True)
+        st.dataframe(df_picks, width=None, hide_index=True)
     else:
         st.info("No weekly picks generated yet. Run the full sync.")
 
@@ -126,7 +126,7 @@ with tabs[2]:
         st.subheader("Active Universe")
         with db.connect() as con:
             univ = pd.read_sql_query("SELECT ticker, category, added_ts FROM universe WHERE enabled=1", con)
-        st.dataframe(univ, use_container_width=True, hide_index=True)
+        st.dataframe(univ, width=None, hide_index=True)
         
     with col2:
         st.subheader("Flatfile Inventory")
@@ -135,4 +135,4 @@ with tabs[2]:
         bar_counts = []
         for tick, s in stats['bar_counts'].items():
             bar_counts.append({"Ticker": tick, "Bars": s['bars'], "Last Date": s['last_date']})
-        st.dataframe(pd.DataFrame(bar_counts), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(bar_counts), width=None, hide_index=True)
