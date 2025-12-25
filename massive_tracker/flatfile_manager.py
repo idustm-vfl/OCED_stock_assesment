@@ -11,7 +11,7 @@ from __future__ import annotations
 import csv
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -64,8 +64,8 @@ class FlatfileManager:
             if df.empty or 'timestamp' not in df.columns:
                 return None, None
             
-            # Convert timestamp column to datetime
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            # Convert timestamp column to datetime (and ensure UTC)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
             return df['timestamp'].min(), df['timestamp'].max()
         except Exception as e:
             logger.error(f"Error reading {ticker}.csv: {e}")
@@ -139,7 +139,7 @@ class FlatfileManager:
         if mode == 'append' and csv_path.exists():
             # Load existing data
             existing_df = pd.read_csv(csv_path)
-            existing_df['timestamp'] = pd.to_datetime(existing_df['timestamp'])
+            existing_df['timestamp'] = pd.to_datetime(existing_df['timestamp'], utc=True)
             
             # Combine and deduplicate
             combined_df = pd.concat([existing_df, df], ignore_index=True)
@@ -180,16 +180,14 @@ class FlatfileManager:
         # Download history for new tickers
         if tickers_to_add:
             logger.info(f"Adding {len(tickers_to_add)} new tickers: {sorted(tickers_to_add)}")
-            end_date = datetime.now()
+            end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=days_back)
             
             total = len(tickers_to_add)
             for i, ticker in enumerate(sorted(tickers_to_add)):
                 if progress_callback:
                     progress_callback(i + 1, total, ticker)
-                if i > 0:
-                    logger.info(f"Rate limiting... sleeping 13s (Call {i+1}/{total})")
-                    time.sleep(13)
+                # Throttled globally in massive_client
                 df = self.download_history(ticker, start_date, end_date)
                 if not df.empty:
                     self.append_to_flatfile(ticker, df, mode='overwrite')
@@ -208,20 +206,19 @@ class FlatfileManager:
                 if last_date is None:
                     # File exists but empty/corrupted, re-download
                     logger.warning(f"{ticker}.csv is empty/corrupted, re-downloading")
-                    end_date = datetime.now()
+                    end_date = datetime.now(timezone.utc)
                     start_date = end_date - timedelta(days=days_back)
                     df = self.download_history(ticker, start_date, end_date)
                     if not df.empty:
                         self.append_to_flatfile(ticker, df, mode='overwrite')
                 else:
-                    # Download data since last timestamp
-                    start_date = last_date + timedelta(minutes=1)  # Start right after last bar
-                    end_date = datetime.now()
+                else:
+                    # Download data since last timestamp (last_date is UTC)
+                    start_date = last_date + timedelta(minutes=1)
+                    end_date = datetime.now(timezone.utc)
                     
                     # Only fetch if there's a gap of more than 1 day
                     if (end_date - start_date).days >= 1:
-                        logger.info(f"Rate limiting... sleeping 13s for {ticker}")
-                        time.sleep(13)
                         logger.info(f"Updating {ticker}: {start_date.date()} to {end_date.date()}")
                         df = self.download_history(ticker, start_date, end_date)
                         if not df.empty:

@@ -354,6 +354,11 @@ def fetch_ohlcv_local_flatfile(ticker: str) -> Optional[pd.DataFrame]:
         return None
 
 
+def _get_now_str() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
 def get_ohlcv_daily(
     ticker: str,
     start_date: dt.date,
@@ -635,7 +640,7 @@ def run_oced_scan(
     progress_callback: Optional[callable] = None,
 ) -> List[Dict[str, Any]]:
     db = DB(db_path)
-    run_ts = dt.datetime.now(dt.timezone.utc).isoformat()
+    run_ts = _get_now_str()
     symbols = [t.upper().strip() for t in (tickers or TICKERS)]
 
     today = dt.date.today()
@@ -646,9 +651,8 @@ def run_oced_scan(
     for i, sym in enumerate(symbols):
         if progress_callback:
             progress_callback(i + 1, total, sym)
-        if i > 0:
-            print(f"[OCED] Rate limiting... sleeping 13s ({i+1}/{total})")
-            time.sleep(13)
+        
+        # Rate limiting is now handled centrally in massive_client
         quote_px = fetch_massive_quote_price(sym)
         if quote_px is not None:
             db.set_market_last(sym, run_ts, quote_px, source="massive_rest:last_trade")

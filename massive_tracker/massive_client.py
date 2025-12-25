@@ -38,12 +38,8 @@ def _init_client():
         return RESTClient(token)  # type: ignore[call-arg]
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-rest = _init_client()
-
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 def _ts_from_ns(val: Any) -> str | None:
     if val in (None, ""):
@@ -62,9 +58,28 @@ def _ts_from_ns(val: Any) -> str | None:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
+_LAST_CALL_TS = 0.0
+_CALL_DELAY = 15.0 # Strict 5 calls/min = 12s, 15s for safety
+
+def _throttle():
+    global _LAST_CALL_TS
+    now = time.time()
+    elapsed = now - _LAST_CALL_TS
+    if elapsed < _CALL_DELAY:
+        wait = _CALL_DELAY - elapsed
+        print(f"[MASSIVE] Rate limiting... sleeping {wait:.1f}s")
+        time.sleep(wait)
+    _LAST_CALL_TS = time.time()
+
+rest = _init_client()
+
+
 def _sdk_get(path: str, params: dict | None = None) -> dict:
     if rest is None:
         raise RuntimeError("Massive REST client unavailable. Install `massive` and set MASSIVE_ACCESS_KEY/MASSIVE_KEY_ID.")
+    
+    _throttle() # Centralized throttle for all API calls
+    
     token = _api_token()
     # Ensure path starts with /
     if not path.startswith("/"):
@@ -170,8 +185,9 @@ def get_stock_last_price(ticker: str) -> tuple[float | None, str | None, str]:
     try:
         from datetime import datetime, timedelta
         # Try today's data first, then yesterday's
-        today = datetime.now().strftime("%Y-%m-%d")
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        now_utc = _utc_now()
+        today = now_utc.strftime("%Y-%m-%d")
+        yesterday = (now_utc - timedelta(days=1)).strftime("%Y-%m-%d")
         
         # We try 1-minute aggregates for today
         data = get_aggs(ticker_clean, 1, "minute", yesterday, today, limit=10, order="desc")
@@ -245,9 +261,10 @@ def get_option_last_quote(option_contract: str) -> tuple[float | None, str | Non
 
     # FALLBACK: Aggregates
     try:
-        from datetime import datetime, timedelta
-        today = datetime.now().strftime("%Y-%m-%d")
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        from datetime import timedelta
+        now_utc = _utc_now()
+        today = now_utc.strftime("%Y-%m-%d")
+        yesterday = (now_utc - timedelta(days=1)).strftime("%Y-%m-%d")
         
         data = get_aggs(option_contract, 1, "day", yesterday, today, limit=1, order="desc")
         results = data.get("results") or []
@@ -336,7 +353,7 @@ def get_option_chain_snapshot(
             }
         )
 
-    return out, ts_best or _utc_now(), "massive_rest:chain_snapshot"
+    return out, ts_best or _utc_now().isoformat(), "massive_rest:chain_snapshot"
 
 
 def get_option_contract_snapshot(
