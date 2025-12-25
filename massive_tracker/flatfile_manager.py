@@ -106,11 +106,9 @@ class FlatfileManager:
                 logger.warning(f"No data returned for {ticker}")
                 return pd.DataFrame()
             
-            # Standardize columns to what FlatfileManager expects
-            # get_aggs_df returns: date, open, high, low, close, volume, timestamp...
-            # We want: timestamp, open, high, low, close, volume
-            if 'date' in df.columns and 'timestamp' not in df.columns:
-                 df = df.rename(columns={'date': 'timestamp'})
+            if 'date' in df.columns:
+                # Use the standardized date column as our new primary timestamp
+                df['timestamp'] = df['date']
             
             df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
                 

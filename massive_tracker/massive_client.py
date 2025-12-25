@@ -441,13 +441,23 @@ def get_aggs_df(ticker: str, multiplier: int, timespan: str, from_date: str, to_
     
     # Standardize timestamp to datetime
     if 'timestamp' in df.columns:
-        # Handle ms vs ns vs s
-        ts_sample = float(df['timestamp'].iloc[0])
-        if ts_sample > 1e15: # ns
-             df['date'] = pd.to_datetime(df['timestamp'], unit='ns', utc=True)
-        elif ts_sample > 1e12: # ms
-             df['date'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-        else: # s
-             df['date'] = pd.to_datetime(df['timestamp'], unit='s', utc=True)
+        first_val = df['timestamp'].iloc[0]
+        
+        # If it's already a datetime-like object, just ensure it's a Series of them
+        if isinstance(first_val, (pd.Timestamp, dt.datetime)):
+            df['date'] = pd.to_datetime(df['timestamp'], utc=True)
+        else:
+            try:
+                ts_sample = float(first_val)
+                # Handle ms vs ns vs s
+                if ts_sample > 1e15: # ns
+                     df['date'] = pd.to_datetime(df['timestamp'], unit='ns', utc=True)
+                elif ts_sample > 1e12: # ms
+                     df['date'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+                else: # s
+                     df['date'] = pd.to_datetime(df['timestamp'], unit='s', utc=True)
+            except (ValueError, TypeError):
+                # Fallback for strings or other weirdness
+                df['date'] = pd.to_datetime(df['timestamp'], utc=True)
     
     return df
