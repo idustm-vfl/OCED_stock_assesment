@@ -108,6 +108,7 @@ def get_stock_last_price(ticker: str) -> tuple[float | None, str | None, str]:
     if not token:
         return None, None, "massive_rest:last_trade"
 
+    ticker_clean = ticker.strip().upper()
     try:
         # Use the SDK's get_last_trade or equivalent if available,
         # but the original code was mixed.

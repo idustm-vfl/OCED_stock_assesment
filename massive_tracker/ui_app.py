@@ -6,6 +6,7 @@ from datetime import datetime
 import sys
 
 import streamlit as st
+import pandas as pd
 
 # Ensure project root is importable when launched via `streamlit run massive_tracker/ui_app.py`
 ROOT = Path(__file__).resolve().parent.parent
@@ -78,6 +79,24 @@ def _apply_theme() -> None:
         .metric-card {background: var(--card); padding: 1rem 1.25rem; border-radius: 14px; border: 1px solid rgba(255,255,255,0.08);}
         .pill {background: rgba(124, 240, 198, 0.12); color: var(--accent); padding: 0.25rem 0.75rem; border-radius: 999px; font-weight: 600; border: 1px solid rgba(124, 240, 198, 0.3);}
         button[kind="primary"], .stButton>button {background: linear-gradient(120deg, #7cf0c6, #8f9bff); color: #0b1224; font-weight: 700; border: none; border-radius: 12px; box-shadow: 0 12px 30px rgba(124, 240, 198, 0.2);}
+        
+        /* High-density table styles */
+        div[data-testid="stDataFrame"] > div {
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        [data-testid="stExpander"] {
+            border: 1px solid rgba(255,255,255,0.08);
+            background: var(--panel);
+            border-radius: 12px;
+        }
+        .contract-id {
+            font-family: monospace;
+            background: rgba(143, 155, 255, 0.15);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #8f9bff;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -424,7 +443,20 @@ def main() -> None:
         open_rows = wl.list_open_contracts()
         st.caption("Open contracts")
         if open_rows:
-            st.dataframe(open_rows, use_container_width=True, height=200)
+            # Convert to DF with proper headers
+            df_open = pd.DataFrame(open_rows, columns=["ID", "Ticker", "Expiry", "Right", "Strike", "Qty", "Opened"])
+            df_open["Contract"] = df_open.apply(lambda r: f"{r['Ticker']} {r['Right']}{r['Strike']:.1f} {r['Expiry']}", axis=1)
+            st.dataframe(
+                df_open[["ID", "Contract", "Qty", "Opened"]],
+                use_container_width=True,
+                hide_index=True,
+                height=250,
+                column_config={
+                    "ID": st.column_config.NumberColumn(width="small"),
+                    "Contract": st.column_config.TextColumn("Contract (Asset ID)", width="medium"),
+                    "Qty": st.column_config.NumberColumn(width="small"),
+                }
+            )
         close_id = st.number_input("Close contract id", min_value=0, step=1, value=0)
         if st.button("Close Contract") and close_id:
             try:
@@ -452,22 +484,50 @@ def main() -> None:
     with col_main:
         st.markdown("**Latest Weekly Picks**")
         if picks:
-            buckets: dict[str, list[dict]] = {}
-            for p in picks:
-                bucket = _cost_bucket(p.get("pack_100_cost"))
-                p = dict(p)
-                p["pack_bucket"] = bucket
-                buckets.setdefault(bucket, []).append(p)
-            for bucket_label in ["≤ $5k", "≤ $10k", "≤ $25k", "> $25k", "unknown"]:
-                if bucket_label in buckets:
-                    st.markdown(f"**{bucket_label}**")
-                    st.dataframe(buckets[bucket_label], use_container_width=True, height=200)
+            df_picks = pd.DataFrame(picks)
+            # Create a more descriptive Bucket/ID column
+            df_picks["Asset"] = df_picks.apply(lambda r: f"{r['ticker']} {r.get('strike_source') or ''}", axis=1)
+            
+            buckets: dict[str, pd.DataFrame] = {}
+            for p_bucket in ["≤ $5k", "≤ $10k", "≤ $25k", "> $25k", "unknown"]:
+                # Match logic from _cost_bucket
+                mask = df_picks.apply(lambda r: _cost_bucket(r.get("pack_100_cost")), axis=1) == p_bucket
+                sub_df = df_picks[mask]
+                if not sub_df.empty:
+                    st.markdown(f"**{p_bucket}**")
+                    st.dataframe(
+                        sub_df[["ticker", "price", "prem_yield", "expiry", "strike", "pack_100_cost", "final_rank_score"]].sort_values("final_rank_score", ascending=False),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=200,
+                        column_config={
+                            "price": st.column_config.NumberColumn(format="$%.2f"),
+                            "prem_yield": st.column_config.NumberColumn(format="%.2f%%"),
+                            "strike": st.column_config.NumberColumn(format="$%.1f"),
+                            "pack_100_cost": st.column_config.NumberColumn(format="$%.0f"),
+                            "final_rank_score": st.column_config.NumberColumn(format="%.2f"),
+                        }
+                    )
         else:
             st.info("No weekly picks yet.")
 
-        st.markdown("**Contract Health (option_features)**")
+        st.markdown("**Contract Health**")
         if health:
-            st.dataframe(health, use_container_width=True, height=300)
+            df_h = pd.DataFrame(health)
+            # Combine for contract ID
+            df_h["Contract"] = df_h.apply(lambda r: f"{r['ticker']} {r['right']}{r['strike']:.1f} {r['expiry']}", axis=1)
+            cols_to_show = ["Contract", "stock_price", "option_mid", "spread_pct", "recommendation"]
+            st.dataframe(
+                df_h[cols_to_show],
+                use_container_width=True, 
+                hide_index=True,
+                height=300,
+                column_config={
+                    "stock_price": st.column_config.NumberColumn("Stock", format="$%.2f"),
+                    "option_mid": st.column_config.NumberColumn("Opt Mid", format="$%.2f"),
+                    "spread_pct": st.column_config.NumberColumn("Spread", format="%.1f%%"),
+                }
+            )
         else:
             st.info("No contract health snapshots yet.")
 
