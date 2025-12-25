@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import datetime as dt
 from datetime import datetime, timezone
 from typing import Any
+import pandas as pd
 
 
 
@@ -418,7 +420,6 @@ def get_aggs(ticker: str, multiplier: int, timespan: str, from_date: str, to_dat
 
 def get_aggs_df(ticker: str, multiplier: int, timespan: str, from_date: str, to_date: str, **kwargs) -> pd.DataFrame:
     """Fetch aggregates and return a standardized pandas DataFrame."""
-    import pandas as pd
     data = get_aggs(ticker, multiplier, timespan, from_date, to_date, **kwargs)
     results = data.get("results") or []
     if not results:
