@@ -212,7 +212,6 @@ class FlatfileManager:
                     if not df.empty:
                         self.append_to_flatfile(ticker, df, mode='overwrite')
                 else:
-                else:
                     # Download data since last timestamp (last_date is UTC)
                     start_date = last_date + timedelta(minutes=1)
                     end_date = datetime.now(timezone.utc)
