@@ -52,8 +52,11 @@ def _ts_from_ns(val: Any) -> str | None:
         return None
     if ts <= 0:
         return None
-    if ts > 1e12:
+    # Nano: 1.7e18, Milli: 1.7e12, Seconds: 1.7e9
+    if ts > 1e15:
         ts = ts / 1_000_000_000.0
+    elif ts > 1e12:
+        ts = ts / 1000.0
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
@@ -144,11 +147,51 @@ def get_stock_last_price(ticker: str) -> tuple[float | None, str | None, str]:
         if bid is not None and ask is not None:
             mid = (float(bid) + float(ask)) / 2.0
             ts = _ts_from_ns(nbbo.get("sip_timestamp") or nbbo.get("t") or nbbo.get("timestamp"))
-            return mid, ts, "massive_rest:last_nbbo_mid_sdk"
-    except Exception:
-        pass
+            if mid is not None:
+                return float(mid), ts, "massive_rest:nbbo_sdk"
+    except Exception as e:
+        print(f"[MASSIVE SDK] get_stock_last_price NBBO failed for {ticker_clean}: {e}")
 
-    return None, None, "massive_rest:last_trade"
+    # FINAL FALLBACK: Delayed Aggregates (Common for Basic/Starter plans)
+    try:
+        from datetime import datetime, timedelta
+        # Try today's data first, then yesterday's
+        today = datetime.now().strftime("%Y-%m-%d")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        
+        # We try 1-minute aggregates for today
+        data = get_aggs(ticker_clean, 1, "minute", yesterday, today, limit=10, order="desc")
+        results = data.get("results") or []
+        if not results:
+            # Try 1-day aggregate for yesterday
+            data = get_aggs(ticker_clean, 1, "day", yesterday, yesterday)
+            results = data.get("results") or []
+            
+        if results:
+            last_bar = results[0]
+            price = last_bar.get("c") # Close of last bar
+            ts = _ts_from_ns(last_bar.get("t") or last_bar.get("timestamp"))
+            if price is not None:
+                return float(price), ts, "massive_rest:delayed_aggs_sdk"
+                
+    except Exception as e:
+        print(f"[MASSIVE SDK] get_stock_last_price Aggs fallback failed for {ticker_clean}: {e}")
+
+    return None, None, "massive_rest:missing"
+
+
+def to_occ_symbol(ticker: str, expiry: str, right: str, strike: float) -> str:
+    """
+    Convert details to standard OCC option symbol.
+    Format: O:TICKER YYMMDD C|P 00000000
+    """
+    t = ticker.upper().strip()
+    # Expiry: YYYY-MM-DD to YYMMDD
+    e = datetime.strptime(expiry, "%Y-%m-%d").strftime("%y%m%d")
+    r = right.upper().strip()[0]
+    # Strike: * 1000, 8 digits
+    s = int(float(strike) * 1000)
+    return f"O:{t}{e}{r}{s:08d}"
 
 
 def get_stock_last_quote(ticker: str) -> tuple[float | None, str | None, str]:
@@ -164,34 +207,52 @@ def get_option_last_quote(option_contract: str) -> tuple[float | None, str | Non
 
     try:
         quotes = rest.list_quotes(option_contract, limit=1)
-    except Exception:
-        return None, None, "massive_rest:option_quote"
-
-    try:
         first = next(iter(quotes))
-    except Exception:
+    except Exception as e:
+        print(f"[MASSIVE SDK] get_option_last_quote list_quotes failed for {option_contract}: {e}")
         first = None
 
-    if not first:
-        return None, None, "massive_rest:option_quote"
-
-    bid = getattr(first, "bid_price", None)
-    ask = getattr(first, "ask_price", None)
-    mid = None
-    if bid is not None and ask is not None:
-        try:
-            mid = (float(bid) + float(ask)) / 2.0
-        except Exception:
-            mid = None
-
-    ts = getattr(first, "sip_timestamp", None) or getattr(first, "participant_timestamp", None)
-    if ts:
-        try:
+    if first:
+        bid = getattr(first, "bid_price", None)
+        ask = getattr(first, "ask_price", None)
+        mid = None
+        if bid is not None and ask is not None:
+            try:
+                mid = (float(bid) + float(ask)) / 2.0
+            except Exception:
+                mid = None
+        
+        ts = getattr(first, "sip_timestamp", None) or getattr(first, "participant_timestamp", None)
+        if ts:
             ts = _ts_from_ns(ts)
-        except Exception:
-            pass
+        
+        if mid is not None:
+            return float(mid), ts, "massive_rest:option_quote_sdk"
 
-    return mid, ts, "massive_rest:option_quote"
+    # FALLBACK: Aggregates
+    try:
+        from datetime import datetime, timedelta
+        today = datetime.now().strftime("%Y-%m-%d")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        
+        data = get_aggs(option_contract, 1, "day", yesterday, today, limit=1, order="desc")
+        results = data.get("results") or []
+        if results:
+            last_bar = results[0]
+            price = last_bar.get("c")
+            ts = _ts_from_ns(last_bar.get("t") or last_bar.get("timestamp"))
+            if price is not None:
+                return float(price), ts, "massive_rest:option_delayed_aggs_sdk"
+    except Exception as e:
+        print(f"[MASSIVE SDK] get_option_last_quote fallback failed for {option_contract}: {e}")
+
+    return None, None, "massive_rest:missing"
+
+
+def get_option_price_by_details(ticker: str, expiry: str, right: str, strike: float) -> tuple[float | None, str | None, str]:
+    """Helper to get option price when only details are known."""
+    symbol = to_occ_symbol(ticker, expiry, right, strike)
+    return get_option_last_quote(symbol)
 
 
 def get_option_chain_snapshot(

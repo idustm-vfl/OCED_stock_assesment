@@ -101,35 +101,15 @@ def log_option_features(payload: Dict[str, Any]) -> None:
 # Snapshot provider (Massive REST)
 # ---------------------------
 
-from .massive_client import get_stock_last_price, get_option_last_quote
+from .massive_client import get_stock_last_price, get_option_price_by_details
 
 def _massive_get_stock_quote(ticker: str) -> tuple[float | None, str | None]:
     price, _, _ = get_stock_last_price(ticker)
     return price, "massive_client" if price else None
 
-def _massive_get_option_quote(ticker: str, expiry: str, right: str, strike: float) -> tuple[float | None, dict | None]:
-    # massive_client doesn't have a direct "get option quote by details" that returns full object easily map-able here?
-    # actually get_option_last_quote takes an option_contract (symbol).
-    # We need to construct the symbol or search?
-    # monitor.py expects (ticker, expiry, right, strike).
-    # Massive symbols are format: O:TICKER230101C00100000 etc.
-    # But wait, `get_option_chain_snapshot` works by underlying/expiry.
-    # Using `get_option_last_quote` requires the OCC symbol.
-    # Let's try to construct it or use a different lookup?
-    # For now, let's just stick to stock price from massive and fallback for options if we can't easily specific-quote.
-    # OR better: usage of `monitor.py` implies we have open positions (contracts).
-    # The contract symbol might be available in the Position object?
-    # In `run_monitor`, we iterate `rows = wl.list_open_contracts()`.
-    # row has `ticker, expiry, right, strike`.
-    # It does NOT seem to have the OCC symbol stored explicitly in that tuple?
-    # Wait, `options_contracts` table has `ticker` (which is the OCC symbol).
-    # I should try to lookup the OCC symbol from DB if possible, or construct it.
-    # Converting (Ticker, Expiry, Right, Strike) to OCC is standard.
-    # Let's add a helper to construct OCC if needed, OR just skip option lookup if too complex for this tool call.
-    # BUT, `monitor.py` is for open positions. We WANT current price.
-    # I'll rely on `get_option_chain_snapshot` for the specific expiry and filtering in memory (inefficient but works) 
-    # OR assume I can construct OCC symbol.
-    return None, None
+def _massive_get_option_quote(ticker: str, expiry: str, right: str, strike: float) -> tuple[float | None, str | None]:
+    price, _, source = get_option_price_by_details(ticker, expiry, right, strike)
+    return price, source if price else None
 
 
 def _mid(bid: Optional[float], ask: Optional[float], last: Optional[float]) -> Optional[float]:

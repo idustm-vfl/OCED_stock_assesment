@@ -24,6 +24,8 @@ from massive_tracker.config import CFG, mask5
 from massive_tracker.stock_ml import run_stock_ml
 from massive_tracker.universe import sync_universe
 from massive_tracker.compare_models import run_compare
+from massive_tracker.flatfile_manager import FlatfileManager
+from massive_tracker.oced import run_oced_scan
 
 
 DEFAULT_UNIVERSE = [
@@ -288,6 +290,27 @@ def main() -> None:
                 st.success(f"Universe synced ({synced} rows)")
             except Exception as e:
                 st.error(f"Sync failed: {e}")
+                
+        if st.button("Sync All (Univ + History + Scores)", help="Downloads history and calculates OCED scores. Takes a few minutes."):
+            with st.status("Performing Full Data Sync...") as status:
+                try:
+                    st.write("1. Syncing Universe from DB...")
+                    sync_universe(DB(db_path))
+                    
+                    st.write("2. Syncing Historical Flatfiles (S3)...")
+                    # Try-catch inside because S3 might be slow/fail
+                    mgr = FlatfileManager(db_path=db_path)
+                    mgr.sync_universe(days_back=60, update_existing=True)
+                    
+                    st.write("3. Calculating OCED Scores (Scanning)...")
+                    run_oced_scan(db_path=db_path)
+                    
+                    status.update(label="Full Sync Complete!", state="complete")
+                    st.success("Data loaded. You can now build picks.")
+                    st.rerun()
+                except Exception as e:
+                    status.update(label=f"Sync Failed: {e}", state="error")
+                    st.error(f"Sync error: {e}")
 
         if st.button("Start Stream"):
             _start_stream(
@@ -350,11 +373,15 @@ def main() -> None:
 
         if st.button("Run Daily Pipeline"):
             try:
-                picks = run_weekly_picker(db_path=db_path, top_n=10)
-                run_monitor(db_path=db_path)
-                write_summary(db_path=db_path)
+                with st.spinner("Building picks and monitoring..."):
+                    picks = run_weekly_picker(db_path=db_path, top_n=10)
+                    if not picks:
+                        st.warning("No picks generated. Ensure you have run 'Sync All' to populate OCED scores.")
+                    run_monitor(db_path=db_path)
+                    write_summary(db_path=db_path)
                 st.success(f"Daily pipeline complete | picks={len(picks)}")
                 st.session_state.last_status = "Daily pipeline complete"
+                st.rerun()
             except Exception as e:
                 st.error(f"Daily pipeline failed: {e}")
                 st.session_state.last_status = f"Daily pipeline failed: {e}"
