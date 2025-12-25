@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import pandas as pd
-from .massive_client import MassiveRESTClient
+from .massive_client import get_aggs
 from .store import DB
 from .watchlist import Watchlists
 
@@ -32,13 +32,11 @@ class FlatfileManager:
         self,
         db_path: str = "data/sqlite/tracker.db",
         flatfile_dir: Path | str = DEFAULT_FLATFILE_DIR,
-        massive_client: Optional[MassiveRESTClient] = None,
     ):
         self.db = DB(db_path)
         self.flatfile_dir = Path(flatfile_dir)
         self.flatfile_dir.mkdir(parents=True, exist_ok=True)
         
-        self.client = massive_client or MassiveRESTClient()
         logger.info(f"FlatfileManager initialized: dir={self.flatfile_dir}")
 
     def get_active_tickers(self) -> List[str]:
@@ -95,7 +93,7 @@ class FlatfileManager:
             from_str = start_date.strftime("%Y-%m-%d")
             to_str = end_date.strftime("%Y-%m-%d")
             
-            data = self.client.get_aggs(
+            data = get_aggs(
                 ticker=ticker,
                 multiplier=1,
                 timespan="minute",

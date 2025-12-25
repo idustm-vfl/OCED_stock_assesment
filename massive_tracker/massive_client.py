@@ -335,3 +335,9 @@ def get_options_contracts(**kwargs) -> list[dict]:
 
     return results
 
+
+def get_aggs(ticker: str, multiplier: int, timespan: str, from_date: str, to_date: str, **kwargs) -> dict:
+    """Fetch aggregates (bars) for a ticker."""
+    # /v2/aggs/ticker/{stocksTicker}/range/{multiplier}/{timespan}/{from}/{to}
+    path = f"/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from_date}/{to_date}"
+    return _sdk_get(path, params=kwargs)
