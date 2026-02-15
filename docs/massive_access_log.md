@@ -4,11 +4,7 @@
 - MCP server wrapper script removed; using Python client + REST directly.
 - massive Python SDK present: version 2.0.2.
 - MASSIVE_ACCESS_KEY is the primary token; MASSIVE_KEY_ID can be used as fallback. Code now prefers ACCESS_KEY then KEY_ID.
-- REST/SDK results with current keys:
-	- `list_tickers(limit=1)` via `RESTClient` succeeds (returns `Ticker` objects).
-	- `get_snapshot_ticker('stocks', 'AAPL')` (real-time snapshot) returns NOT_AUTHORIZED (plan/entitlement).
-	- Direct HTTP `/v2/last/trade/AAPL` returns NOT_AUTHORIZED (plan/entitlement).
-	- Expect other real-time endpoints to be restricted until plan upgraded; flatfile/S3 likely still usable with provided keys.
+-
 
 ## Environment keys in workspace
 - MASSIVE_ACCESS_KEY (primary)
