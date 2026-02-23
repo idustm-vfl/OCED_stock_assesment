@@ -14,3 +14,6 @@ streamlit
 Pytest 
 uv
 openai
+# Optional: Google Cloud Secret Manager for production deployments
+# Uncomment to enable: pip install google-cloud-secret-manager
+# google-cloud-secret-manager

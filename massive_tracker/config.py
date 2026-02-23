@@ -9,6 +9,14 @@ try:
 except ImportError:
     pass
 
+# Optional: Bootstrap from GCP Secret Manager if GCP_PROJECT_ID is set
+if os.getenv("GCP_PROJECT_ID"):
+    try:
+        from .secrets import bootstrap_env_from_gcp
+        bootstrap_env_from_gcp()
+    except ImportError:
+        pass  # google-cloud-secret-manager not installed
+
 
 @dataclass(frozen=True)
 class RuntimeConfig:
@@ -110,15 +118,23 @@ def load_runtime_config() -> RuntimeConfig:
 
 
 def load_flatfile_config(*, required: bool = True) -> FlatfileConfig | None:
-    """Load optional Massive flatfile (S3) credentials from env."""
+    """
+    Load optional Massive flatfile (S3) credentials from env.
+    
+    S3 Access requires:
+    - MASSIVE_KEY_ID (access key for S3)
+    - MASSIVE_SECRET_KEY (secret key for S3)
+    
+    Falls back to AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY for compatibility.
+    """
 
-    access_key = _first_env("MASSIVE_ACCESS_KEY", "AWS_ACCESS_KEY_ID")
-    secret_key = _first_env("MASSIVE_SECRET_KEY", "AWS_SECRET_ACCESS_KEY")
+    access_key = _first_env("MASSIVE_KEY_ID", "AWS_ACCESS_KEY_ID", "M_S3_ACCESS_KEY_ID")
+    secret_key = _first_env("MASSIVE_SECRET_KEY", "AWS_SECRET_ACCESS_KEY", "M_S3_SECRET_ACCESS_KEY")
     
     if not access_key or not secret_key:
         if required:
             raise RuntimeError(
-                "Missing S3 credentials. Set MASSIVE_ACCESS_KEY/AWS_ACCESS_KEY_ID and MASSIVE_SECRET_KEY/AWS_SECRET_ACCESS_KEY."
+                "Missing S3 credentials. Set MASSIVE_KEY_ID and MASSIVE_SECRET_KEY for S3 flatfile access."
             )
         return None
 
