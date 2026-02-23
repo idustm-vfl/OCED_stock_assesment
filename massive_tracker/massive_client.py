@@ -136,53 +136,51 @@ def _extract_price_from_stock_snapshot(result: dict) -> tuple[float | None, str 
 
 
 def get_stock_last_price(ticker: str) -> tuple[float | None, str | None, str]:
-    """Return (price, ts, source) using last trade or NBBO mid."""
+    """Return (price, ts, source) using stock snapshot endpoint.
+    
+    Uses /v2/snapshot/locale/us/markets/stocks/tickers/{ticker} (available endpoint)
+    instead of /v2/last/trade (requires additional entitlements).
+    """
     token = _api_token()
     if not token:
-        return None, None, "massive_rest:last_trade"
+        return None, None, "massive_rest:snapshot"
 
     ticker_clean = ticker.strip().upper()
+    
+    # PRIMARY: Stock Snapshot (Last Trade)
     try:
-        # Use the SDK's get_last_trade or equivalent if available,
-        # but the original code was mixed.
-        # Assuming the SDK might have a method for this, or we rely on _sdk_get if we want to be consistent?
-        # The original code called requests direct.
-        # Let's try to use _sdk_get logic or strict SDK methods.
-        # However, `get_stock_last_price` in the original code tried strict REST calls.
-        # I will replace this with a call using `_sdk_get` which uses the initialized `rest` client.
+        data = _sdk_get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker_clean}")
+        ticker_data = data.get("ticker") or {}
         
-        # Endpoint: /v2/last/trade/{ticker}
-        data = _sdk_get(f"/v2/last/trade/{ticker_clean}")
-        trade = data.get("results") or data
-        # Note: raw API might return different structure than what requests.get().json() did if wrappers involved?
-        # requests.get(...).json() returns the body. _sdk_get returns result of rest.get().
-        
-        # If _sdk_get returns the full JSON response:
-        price = trade.get("price") or trade.get("p")
-        ts = _ts_from_ns(trade.get("sip_timestamp") or trade.get("t") or trade.get("timestamp"))
+        # Get last trade price
+        last_trade = ticker_data.get("lastTrade") or {}
+        price = last_trade.get("p")
+        ts = _ts_from_ns(last_trade.get("t"))
         
         if price is not None:
-             return float(price), ts, "massive_rest:last_trade_sdk"
-             
+            return float(price), ts, "massive_rest:snapshot_last_trade"
+            
     except Exception as e:
-        print(f"[MASSIVE SDK] get_stock_last_price failed for {ticker_clean}: {e}")
+        print(f"[MASSIVE SDK] get_stock_last_price snapshot failed for {ticker_clean}: {e}")
 
-    # Fallback to NBBO via SDK if trade failed
+    # FALLBACK: Stock Snapshot (Last Quote - NBBO)
     try:
-        data = _sdk_get(f"/v2/last/nbbo/{ticker_clean}")
-        nbbo = data.get("results") or data
-        bid = nbbo.get("bidprice") or nbbo.get("bid_price") or nbbo.get("b") or nbbo.get("p") # p is unlikely for bid, but massive sometimes uses short keys
-        ask = nbbo.get("askprice") or nbbo.get("ask_price") or nbbo.get("a") or nbbo.get("P")
+        data = _sdk_get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker_clean}")
+        ticker_data = data.get("ticker") or {}
+        
+        # Get last quote (bid/ask midpoint)
+        last_quote = ticker_data.get("lastQuote") or {}
+        bid = last_quote.get("p")  # Bid price
+        ask = last_quote.get("P")  # Ask price
         
         if bid is not None and ask is not None:
             mid = (float(bid) + float(ask)) / 2.0
-            ts = _ts_from_ns(nbbo.get("sip_timestamp") or nbbo.get("t") or nbbo.get("timestamp"))
-            if mid is not None:
-                return float(mid), ts, "massive_rest:nbbo_sdk"
+            ts = _ts_from_ns(last_quote.get("t"))
+            return float(mid), ts, "massive_rest:snapshot_nbbo"
     except Exception as e:
-        print(f"[MASSIVE SDK] get_stock_last_price NBBO failed for {ticker_clean}: {e}")
+        print(f"[MASSIVE SDK] get_stock_last_price NBBO fallback failed for {ticker_clean}: {e}")
 
-    # FINAL FALLBACK: Delayed Aggregates (Common for Basic/Starter plans)
+    # FINAL FALLBACK: Daily Aggregates
     try:
         from datetime import datetime, timedelta
         # Try today's data first, then yesterday's

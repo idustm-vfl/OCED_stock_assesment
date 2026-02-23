@@ -55,13 +55,16 @@ python -m massive_tracker.cli friday_close  # Friday scorecard (rank drift + pre
 ## Environment Variables
 
 **Massive API** (REST + WebSocket):
-- `MASSIVE_API_KEY` (required for REST API calls)
+- `MASSIVE_API_KEY` (required for REST API calls) - **VERIFIED WORKING**
+  - Provides access to: `/v2/snapshot/*`, `/v3/snapshot/*`, `/v2/aggs/*`, `/v3/reference/*`
+  - All critical endpoints tested and operational
+  - Rate limit: 5 calls/min (15s minimum between calls)
 - `MASSIVE_REST_BASE` (default: "https://api.massive.com")
 - `MASSIVE_WS_FEED` (default: "delayed")
 
 **S3 Flatfile** (optional bootstrap, separate credentials):
-- `MASSIVE_KEY_ID` (S3 access key ID, required for flatfile downloads)
-- `MASSIVE_SECRET_KEY` (S3 secret key, required for flatfile downloads)
+- `MASSIVE_KEY_ID` (S3 access key ID, optional for flatfile downloads)
+- `MASSIVE_SECRET_KEY` (S3 secret key, optional for flatfile downloads)
 - `MASSIVE_S3_ENDPOINT` (default: "https://files.massive.com")
 - `MASSIVE_S3_BUCKET` (default: "flatfiles")
 - `MASSIVE_STOCKS_PREFIX` (default: "us_stocks_sip")
@@ -154,10 +157,14 @@ pytest tests/test_smoke.py -v             # Integration smoke tests
 
 ## Integration Points
 
-- **Massive REST** (massive_client.py): `get_stock_last_price`, `get_option_chain_snapshot`, `get_option_price_by_details` with throttling
+- **Massive REST** (massive_client.py): 
+  - `GET /v2/snapshot/locale/us/markets/stocks/tickers/{ticker}` - Get stock prices
+  - `GET /v3/snapshot/options/{underlying}` - Get option chains with Greeks
+  - `GET /v2/aggs/ticker/{ticker}/range/...` - Historical bars for ML features
+  - With throttling and retry logic
 - **Massive WebSocket** (ws_client.py): subscribes to stocks feed, writes ws_events.jsonl, caches prices in DB.market_last
 - **yfinance fallback** (oced.py): when Massive REST fails, falls back to yfinance for OHLCV
-- **S3 flatfiles** (s3_flatfiles.py + ingest.py): MassiveS3 class wraps boto3, downloads daily snapshots
+- **S3 flatfiles** (s3_flatfiles.py + ingest.py): Optional daily snapshot ingestion (may require separate credentials)
 
 ## Schema Migration Notes
 
