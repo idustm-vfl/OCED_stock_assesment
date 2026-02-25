@@ -18,7 +18,7 @@ def run_batch(args: BatchArgs) -> None:
     if args.ingest:
         cfg = load_flatfile_config(required=False)
         if cfg is None:
-            raise RuntimeError("Missing flatfile credentials; cannot ingest without MASSIVE_ACCESS_KEY/AWS_ACCESS_KEY_ID and MASSIVE_SECRET_KEY/AWS_SECRET_ACCESS_KEY")
+            raise RuntimeError("Missing flatfile credentials; cannot ingest without MASSIVE_API_KEY and MASSIVE_SECRET_KEY/AWS_SECRET_ACCESS_KEY")
         ingest_daily(cfg, get_db(args.db_path), args.date)
 
     if args.rollup:

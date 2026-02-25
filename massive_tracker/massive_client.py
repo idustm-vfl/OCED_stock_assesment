@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import datetime as dt
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime, timezone, timedelta
+from typing import Any, Optional, Dict, List
 import pandas as pd
 import time
-
-
+import sqlite3
+from pathlib import Path
+import numpy as np
 
 from .config import CFG
 
@@ -37,6 +38,485 @@ def _init_client():
     except TypeError:
         print(f"[MASSIVE REST] using API key: {_mask(token)}")
         return RESTClient(token)  # type: ignore[call-arg]
+
+
+# ═══════════════════════════════════════════════════════════════════
+# SQLite OHLCV Cache - Never refetch historical data
+# ═══════════════════════════════════════════════════════════════════
+
+OHLCV_CACHE_DB = Path(__file__).parent.parent / "data" / "sqlite" / "ohlcv_cache.db"
+
+def _init_ohlcv_cache_db():
+    """Initialize OHLCV cache database with proper schema."""
+    OHLCV_CACHE_DB.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(OHLCV_CACHE_DB)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ohlcv_daily (
+            ticker TEXT NOT NULL,
+            date TEXT NOT NULL,
+            open REAL,
+            high REAL,
+            low REAL,
+            close REAL,
+            volume REAL,
+            fetched_at TEXT,
+            PRIMARY KEY (ticker, date)
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ohlcv_ticker ON ohlcv_daily(ticker)")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ohlcv_date ON ohlcv_daily(date)")
+    conn.commit()
+    conn.close()
+
+# Initialize cache DB on module load
+try:
+    _init_ohlcv_cache_db()
+except Exception as e:
+    print(f"[CACHE] Warning: Could not initialize OHLCV cache: {e}")
+
+
+def is_market_hours() -> bool:
+    """
+    Check if current time is within US market hours (9:30 AM - 4:00 PM ET).
+
+    After hours: Engine should use cached/flatfile data only (no API calls).
+    During market hours: Live API data is acceptable.
+
+    Returns:
+        True if market is open, False otherwise
+    """
+    from zoneinfo import ZoneInfo
+    now = datetime.now(ZoneInfo('America/New_York'))
+
+    # Check if weekend
+    if now.weekday() >= 5:  # Saturday = 5, Sunday = 6
+        return False
+
+    # Check time (9:30 AM to 4:00 PM ET)
+    market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+
+    return market_open <= now <= market_close
+
+
+class MassiveDataClient:
+    """Manages data ingestion from Massive with rate limiting and multi-tier caching"""
+
+    # Class-level S3 failure tracking (shared across instances)
+    _s3_last_failure_time: Optional[datetime] = None
+    _batch_prefetch_complete: bool = False
+
+    # Class-level batch cache for grouped daily data
+    _batch_cache: Dict[str, List[Dict]] = {}  # ticker -> [bars]
+
+    def __init__(self):
+        self.rest_client = rest
+        self.rate_limit_429_count = 0
+        self.last_error = None
+
+    # ═══════════════════════════════════════════════════════════════════
+    # SQLite OHLCV Cache - Never refetch historical data
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _get_cached_ohlcv(self, ticker: str, lookback_days: int) -> Optional[Dict[str, np.ndarray]]:
+        """
+        Read OHLCV from SQLite cache.
+        Returns None if insufficient data (need at least 20 bars).
+        """
+        try:
+            conn = sqlite3.connect(OHLCV_CACHE_DB)
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=lookback_days)
+
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT date, open, high, low, close, volume 
+                FROM ohlcv_daily 
+                WHERE ticker = ? AND date >= ? AND date <= ?
+                ORDER BY date ASC
+            """, (ticker.upper(), start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")))
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            if len(rows) < 20:
+                return None
+
+            ohlcv = {
+                'open': np.array([r[1] for r in rows]),
+                'high': np.array([r[2] for r in rows]),
+                'low': np.array([r[3] for r in rows]),
+                'close': np.array([r[4] for r in rows]),
+                'volume': np.array([r[5] for r in rows])
+            }
+
+            if self._validate_ohlcv(ohlcv):
+                print(
+                    f"[CACHE] ✓ Loaded {len(rows)} bars from SQLite for {ticker}")
+                return ohlcv
+            return None
+
+        except Exception as e:
+            print(f"[CACHE] Warning: Cache read error: {e}")
+            return None
+
+    def _save_ohlcv_to_cache(self, ticker: str, bars: List[dict]):
+        """
+        Save OHLCV bars to SQLite cache.
+        Uses INSERT OR REPLACE to avoid duplicates.
+        """
+        if not bars:
+            return
+
+        try:
+            conn = sqlite3.connect(OHLCV_CACHE_DB)
+            cursor = conn.cursor()
+            fetched_at = datetime.now().isoformat()
+
+            for bar in bars:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO ohlcv_daily 
+                    (ticker, date, open, high, low, close, volume, fetched_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    ticker.upper(),
+                    bar['date'],
+                    bar['open'],
+                    bar['high'],
+                    bar['low'],
+                    bar['close'],
+                    bar['volume'],
+                    fetched_at
+                ))
+
+            conn.commit()
+            conn.close()
+            print(
+                f"[CACHE] 💾 Cached {len(bars)} bars for {ticker}")
+
+        except Exception as e:
+            print(f"[CACHE] Warning: Cache write error: {e}")
+
+    def get_cache_stats(self) -> dict:
+        """Get cache statistics."""
+        try:
+            conn = sqlite3.connect(OHLCV_CACHE_DB)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(DISTINCT ticker), COUNT(*), MIN(date), MAX(date) FROM ohlcv_daily")
+            row = cursor.fetchone()
+            conn.close()
+            return {
+                'tickers': row[0] or 0,
+                'bars': row[1] or 0,
+                'min_date': row[2],
+                'max_date': row[3]
+            }
+        except:
+            return {'tickers': 0, 'bars': 0, 'min_date': None, 'max_date': None}
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Batch Prefetch - Load ALL tickers with minimal API calls
+    # ═══════════════════════════════════════════════════════════════════
+
+    def batch_prefetch_all_tickers(self, tickers: List[str], lookback_days: int = 60) -> int:
+        """
+        BATCH PREFETCH: Load ALL tickers in minimal API calls using Grouped Daily endpoint.
+
+        Instead of 1 API call per ticker, this uses the grouped endpoint:
+        GET /v2/aggs/grouped/locale/us/market/stocks/{date}
+
+        One call per DAY returns ALL stocks. For 60 days = ~42 trading days = 42 API calls
+        instead of 20 tickers × multiple calls per ticker's history.
+
+        Returns: number of tickers successfully cached
+        """
+        import requests
+
+        if MassiveDataClient._batch_prefetch_complete:
+            print("[BATCH] Batch cache already loaded")
+            return len(MassiveDataClient._batch_cache)
+
+        print(
+            f"[BATCH] 📦 Loading {len(tickers)} tickers in bulk via grouped daily...")
+
+        # Initialize cache for requested tickers
+        ticker_set = set(t.upper() for t in tickers)
+        for ticker in ticker_set:
+            if ticker not in MassiveDataClient._batch_cache:
+                MassiveDataClient._batch_cache[ticker] = []
+
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=lookback_days)
+        current_date = start_date
+
+        days_fetched = 0
+        days_failed = 0
+        token = _api_token()
+
+        while current_date <= end_date:
+            # Skip weekends
+            if current_date.weekday() >= 5:
+                current_date += timedelta(days=1)
+                continue
+
+            date_str = current_date.strftime("%Y-%m-%d")
+
+            try:
+                _throttle()
+
+                # Use grouped daily endpoint - ALL stocks in ONE call
+                url = f"https://api.massive.com/v2/aggs/grouped/locale/us/market/stocks/{date_str}"
+                params = {"adjusted": "true", "apiKey": token}
+
+                response = requests.get(url, params=params, timeout=30)
+
+                if response.status_code == 429:
+                    print(
+                        f"[BATCH] ⚠ Rate limit on {date_str}, waiting 60s...")
+                    time.sleep(60)
+                    current_date += timedelta(days=1)
+                    days_failed += 1
+                    continue
+
+                if response.status_code != 200:
+                    days_failed += 1
+                    current_date += timedelta(days=1)
+                    continue
+
+                data = response.json()
+                results = data.get("results", [])
+
+                # Cache bars for our tickers only
+                for bar in results:
+                    ticker = bar.get("T", "").upper()
+                    if ticker in ticker_set:
+                        MassiveDataClient._batch_cache[ticker].append({
+                            'date': date_str,
+                            'open': bar.get('o', 0),
+                            'high': bar.get('h', 0),
+                            'low': bar.get('l', 0),
+                            'close': bar.get('c', 0),
+                            'volume': bar.get('v', 0),
+                            'timestamp': bar.get('t', 0)
+                        })
+
+                days_fetched += 1
+                if days_fetched % 10 == 0:
+                    print(
+                        f"[BATCH]   Fetched {days_fetched} days...")
+
+            except Exception as e:
+                print(f"[BATCH] ⚠ Error on {date_str}: {e}")
+                days_failed += 1
+
+            current_date += timedelta(days=1)
+
+        # Sort bars by date for each ticker
+        for ticker in MassiveDataClient._batch_cache:
+            MassiveDataClient._batch_cache[ticker].sort(
+                key=lambda x: x['date'])
+
+        MassiveDataClient._batch_prefetch_complete = True
+
+        # Count tickers with data
+        tickers_with_data = sum(1 for t in ticker_set if len(
+            MassiveDataClient._batch_cache.get(t, [])) > 0)
+
+        print(
+            f"[BATCH] ✓ COMPLETE: {tickers_with_data}/{len(ticker_set)} tickers loaded ({days_fetched} days)")
+
+        return tickers_with_data
+
+    def fetch_ohlcv_from_batch(self, ticker: str) -> Optional[Dict[str, np.ndarray]]:
+        """
+        Fetch OHLCV from batch cache (must call batch_prefetch_all_tickers first)
+        """
+        ticker = ticker.upper()
+        bars = MassiveDataClient._batch_cache.get(ticker, [])
+
+        if not bars or len(bars) < 10:
+            return None
+
+        ohlcv = {
+            'open': np.array([b['open'] for b in bars]),
+            'high': np.array([b['high'] for b in bars]),
+            'low': np.array([b['low'] for b in bars]),
+            'close': np.array([b['close'] for b in bars]),
+            'volume': np.array([b['volume'] for b in bars])
+        }
+
+        if not self._validate_ohlcv(ohlcv):
+            return None
+
+        print(
+            f"[CACHE] ✓ Loaded {len(bars)} bars from BATCH for {ticker}")
+        return ohlcv
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Main Fetch with Tiered Fallback
+    # ═══════════════════════════════════════════════════════════════════
+
+    def fetch_ohlcv(self, ticker: str, lookback_days: int) -> Optional[Dict[str, np.ndarray]]:
+        """
+        Fetch OHLCV data for ticker with tiered fallback:
+        1. SQLite cache (permanent, instant)
+        2. Batch cache (in-memory from grouped prefetch)
+        3. REST API (last resort, then save to cache)
+
+        After market hours: Cache only, no API calls.
+
+        Returns: dict with keys 'open', 'high', 'low', 'close', 'volume' or None
+        """
+        # ═══ PRIORITY 1: SQLite Cache (permanent, no API needed) ═══
+        cached = self._get_cached_ohlcv(ticker, lookback_days)
+        if cached is not None:
+            return cached
+
+        # ═══ PRIORITY 2: Batch cache (in-memory from grouped daily prefetch) ═══
+        if MassiveDataClient._batch_prefetch_complete:
+            ohlcv_data = self.fetch_ohlcv_from_batch(ticker)
+            if ohlcv_data is not None:
+                return ohlcv_data
+
+        # ═══ PRIORITY 3: REST API (last resort - save to cache after) ═══
+        # AFTER HOURS: Skip API calls - use cached data only
+        if not is_market_hours():
+            print(
+                f"[CACHE] ⏰ Market closed - {ticker} not in cache, skipping API call")
+            return None
+
+        return self._fetch_from_api(ticker, lookback_days)
+
+    def _fetch_from_api(self, ticker: str, lookback_days: int) -> Optional[Dict[str, np.ndarray]]:
+        """
+        Fetch OHLCV data from REST API and SAVE TO CACHE.
+        This is the LAST resort - data gets cached so we never refetch it.
+
+        Returns: dict with OHLCV arrays or None
+        """
+        try:
+            _throttle()
+            start_time = time.time()
+
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=lookback_days)
+
+            data = get_aggs(
+                ticker=ticker,
+                multiplier=1,
+                timespan="day",
+                from_date=start_date.strftime("%Y-%m-%d"),
+                to_date=end_date.strftime("%Y-%m-%d"),
+                limit=50000
+            )
+
+            delay_ms = (time.time() - start_time) * 1000
+            print(f"[API] Fetched {ticker} in {delay_ms:.0f}ms")
+
+            results = data.get("results") or []
+            if not results:
+                print(
+                    f"[API] No data returned for {ticker}")
+                return None
+
+            # Extract full OHLCV
+            ohlcv = {
+                'open': np.array([r.get('o') or r.get('open') for r in results]),
+                'high': np.array([r.get('h') or r.get('high') for r in results]),
+                'low': np.array([r.get('l') or r.get('low') for r in results]),
+                'close': np.array([r.get('c') or r.get('close') for r in results]),
+                'volume': np.array([r.get('v') or r.get('volume') for r in results])
+            }
+
+            # Validation
+            if not self._validate_ohlcv(ohlcv):
+                print(f"[API] Invalid data for {ticker}")
+                return None
+
+            # ═══ SAVE TO CACHE - Never fetch this data again ═══
+            bars_to_cache = []
+            for i, bar in enumerate(results):
+                # Convert timestamp to date string
+                ts = bar.get('t') or bar.get('timestamp')
+                if ts:
+                    try:
+                        ts_float = float(ts)
+                        if ts_float > 1e12:  # milliseconds
+                            ts_float = ts_float / 1000
+                        date_str = datetime.fromtimestamp(
+                            ts_float).strftime("%Y-%m-%d")
+                    except (ValueError, TypeError):
+                        date_str = (start_date + timedelta(days=i)).strftime("%Y-%m-%d")
+                else:
+                    date_str = (start_date + timedelta(days=i)).strftime("%Y-%m-%d")
+
+                bars_to_cache.append({
+                    'date': date_str,
+                    'open': float(bar.get('o') or bar.get('open') or 0),
+                    'high': float(bar.get('h') or bar.get('high') or 0),
+                    'low': float(bar.get('l') or bar.get('low') or 0),
+                    'close': float(bar.get('c') or bar.get('close') or 0),
+                    'volume': float(bar.get('v') or bar.get('volume') or 0)
+                })
+
+            self._save_ohlcv_to_cache(ticker, bars_to_cache)
+
+            print(
+                f"[CACHE] ✓ Loaded {len(ohlcv['close'])} bars from API for {ticker}")
+            return ohlcv
+
+        except Exception as e:
+            self.last_error = str(e)
+            if '429' in str(e):
+                self.rate_limit_429_count += 1
+                print(
+                    f"[API] ⚠️ RATE LIMIT 429 #{self.rate_limit_429_count} on {ticker}")
+            else:
+                print(
+                    f"[API] Error fetching OHLCV for {ticker}: {e}")
+            return None
+
+    def _validate_ohlcv(self, ohlcv: Dict[str, np.ndarray]) -> bool:
+        """Validate OHLCV data quality"""
+        if ohlcv is None:
+            return False
+
+        # Check all required keys
+        required_keys = ['open', 'high', 'low', 'close', 'volume']
+        for key in required_keys:
+            if key not in ohlcv:
+                return False
+
+        # Check sufficient data
+        if len(ohlcv['close']) < 5:  # Relaxed from 20 for smaller datasets
+            return False
+
+        # Check for NaN or invalid values
+        for key in ['open', 'high', 'low', 'close']:
+            if np.any(np.isnan(ohlcv[key])) or np.any(ohlcv[key] <= 0):
+                return False
+
+        # Volume can be 0 but not negative
+        if np.any(np.isnan(ohlcv['volume'])) or np.any(ohlcv['volume'] < 0):
+            return False
+
+        return True
+
+
+# Global singleton instance
+_data_client: Optional[MassiveDataClient] = None
+
+def get_data_client() -> MassiveDataClient:
+    """Get or create singleton data client."""
+    global _data_client
+    if _data_client is None:
+        _data_client = MassiveDataClient()
+    return _data_client
+
 
 
 def _utc_now() -> datetime:
@@ -77,7 +557,7 @@ rest = _init_client()
 
 def _sdk_get(path: str, params: dict | None = None) -> dict:
     if rest is None:
-        raise RuntimeError("Massive REST client unavailable. Install `massive` and set MASSIVE_ACCESS_KEY/MASSIVE_KEY_ID.")
+        raise RuntimeError("Massive REST client unavailable. Install `massive` and set MASSIVE_API_KEY.")
     
     _throttle() # Centralized throttle for all API calls
     

@@ -65,26 +65,25 @@ def mask5(s: str | None) -> str:
 def print_key_status():
     """Print masked Massive keys at startup."""
     print(f"MASSIVE_API_KEY: {mask5(os.getenv('MASSIVE_API_KEY'))}")
-    print(f"MASSIVE_ACCESS_KEY: {mask5(os.getenv('MASSIVE_ACCESS_KEY'))}")
     print(f"MASSIVE_SECRET_KEY: {mask5(os.getenv('MASSIVE_SECRET_KEY'))}")
     print(f"MASSIVE_KEY_ID: {mask5(os.getenv('MASSIVE_KEY_ID'))}")
 
 
 
 def load_runtime_config() -> RuntimeConfig:
-    key = os.getenv("MASSIVE_ACCESS_KEY") or os.getenv("MASSIVE_API_KEY")
+    key = os.getenv("MASSIVE_API_KEY")
     if not key:
         # For testing environments, allow missing key with a warning
         if os.getenv("PYTEST_CURRENT_TEST"):
             key = "test_key_placeholder"
         else:
-            raise RuntimeError("Missing MASSIVE_ACCESS_KEY or MASSIVE_API_KEY in environment/Codespaces secrets")
+            raise RuntimeError("Missing MASSIVE_API_KEY in environment/Codespaces secrets")
     key_id = os.getenv("MASSIVE_KEY_ID")
 
     if os.getenv("VFL_DEBUG_CONFIG", "").strip().lower() in {"1", "true", "yes"}:
         print(
             "Runtime env presence: "
-            f"MASSIVE_ACCESS_KEY={bool(os.getenv('MASSIVE_ACCESS_KEY'))} "
+            f"MASSIVE_API_KEY={bool(os.getenv('MASSIVE_API_KEY'))} "
             f"MASSIVE_KEY_ID={bool(os.getenv('MASSIVE_KEY_ID'))} "
             f"MASSIVE_SECRET_KEY={bool(os.getenv('MASSIVE_SECRET_KEY'))} "
             f"MASSIVE_S3_ENDPOINT={bool(os.getenv('MASSIVE_S3_ENDPOINT'))} "
@@ -92,7 +91,7 @@ def load_runtime_config() -> RuntimeConfig:
         )
     if os.getenv("VFL_DEBUG_CONFIG") == "1":
         debug_keys = (
-            "MASSIVE_ACCESS_KEY",
+            "MASSIVE_API_KEY",
             "MASSIVE_KEY_ID",
             "MASSIVE_SECRET_KEY",
             "MASSIVE_S3_ENDPOINT",

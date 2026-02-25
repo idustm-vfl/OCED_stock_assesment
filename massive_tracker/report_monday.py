@@ -127,7 +127,7 @@ def write_monday_report(db_path: str = "data/sqlite/tracker.db") -> str:
     lines.append(f"DB: {db_path}")
     lines.append("")
     lines.append("Runtime credentials:")
-    lines.append(f"- MASSIVE_ACCESS_KEY: {_mask(os.getenv('MASSIVE_ACCESS_KEY'))}")
+    lines.append(f"- MASSIVE_API_KEY: {_mask(os.getenv('MASSIVE_API_KEY'))}")
     lines.append(f"- MASSIVE_KEY_ID: {_mask(os.getenv('MASSIVE_KEY_ID'))}")
     lines.append("")
 

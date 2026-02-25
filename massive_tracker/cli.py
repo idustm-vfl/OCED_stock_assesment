@@ -330,7 +330,7 @@ def env_check():
 
     print("[ENV CHECK]")
     keys = [
-        "MASSIVE_ACCESS_KEY",
+        "MASSIVE_API_KEY",
         "MASSIVE_KEY_ID",
         "MASSIVE_SECRET_KEY",
         "MASSIVE_S3_ENDPOINT",
