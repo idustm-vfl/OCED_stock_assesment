@@ -978,15 +978,17 @@ def batch_prefetch(lookback_days: int = 60):
     
     Run this once at startup if you have many tickers (10+).
     """
-    from .watchlist import get_watchlist
+    from .watchlist import Watchlists
     from .massive_client import get_data_client
+    from .store import get_db
     
-    watchlist = get_watchlist()
-    if not watchlist:
+    db = get_db(db_path)
+    wl = Watchlists(db)
+    tickers = wl.list_tickers()
+    
+    if not tickers:
         print("[BATCH] No tickers in watchlist. Use 'add-ticker' to add some.")
         return
-    
-    tickers = [w['ticker'] for w in watchlist]
     print(f"\n[BATCH PREFETCH] Starting for {len(tickers)} tickers...")
     print(f"  Lookback: {lookback_days} days")
     
