@@ -64,14 +64,14 @@ Use Cases: Market availability analysis, strategy development, research and mode
 
 ## Flatfile download example (S3)
 
-Use the Massive flatfile credentials, not the REST/WebSocket `MASSIVE_ACCESS_KEY`:
+Use the Massive flatfile credentials, not the REST `MASSIVE_API_KEY`:
 
 ```python
 import os
 import boto3
 
 session = boto3.Session(
-  aws_access_key_id=os.environ["MASSIVE_ACCESS_KEY"],
+  aws_access_key_id=os.environ["MASSIVE_KEY_ID"],
   aws_secret_access_key=os.environ["MASSIVE_SECRET_KEY"],
 )
 

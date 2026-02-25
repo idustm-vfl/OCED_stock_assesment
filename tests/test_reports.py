@@ -38,7 +38,7 @@ def test_monday_report_generation(db: DB):
     assert "Promotions" in markdown, "Missing Promotions section"
     
     # Verify masked keys present
-    assert "MASSIVE_ACCESS_KEY:" in markdown or "MASSIVE_KEY_ID:" in markdown, \
+    assert "MASSIVE_API_KEY:" in markdown or "MASSIVE_KEY_ID:" in markdown, \
         "Missing masked key status"
 
 

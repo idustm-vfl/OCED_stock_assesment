@@ -155,7 +155,6 @@ def mask5(s: str | None) -> str:
 def print_key_status():
     """Print masked Massive keys at startup."""
     print(f"MASSIVE_API_KEY: {mask5(os.getenv('MASSIVE_API_KEY'))}")
-    print(f"MASSIVE_ACCESS_KEY: {mask5(os.getenv('MASSIVE_ACCESS_KEY'))}")
     print(f"MASSIVE_SECRET_KEY: {mask5(os.getenv('MASSIVE_SECRET_KEY'))}")
     print(f"MASSIVE_KEY_ID: {mask5(os.getenv('MASSIVE_KEY_ID'))}")
 ```
@@ -173,7 +172,7 @@ Added `print_key_status()` to:
 Added Runtime Status section in sidebar:
 ```python
 st.subheader("Runtime Status")
-st.caption(f"MASSIVE_ACCESS_KEY: {mask5(os.getenv('MASSIVE_ACCESS_KEY'))}")
+st.caption(f"MASSIVE_API_KEY: {mask5(os.getenv('MASSIVE_API_KEY'))}")
 st.caption(f"MASSIVE_KEY_ID: {mask5(os.getenv('MASSIVE_KEY_ID'))}")
 ```
 

@@ -16,7 +16,7 @@ def test_environment():
     print("1️⃣  ENVIRONMENT SETUP")
     print("="*60)
     
-    api_key = os.getenv("MASSIVE_API_KEY") or os.getenv("MASSIVE_ACCESS_KEY")
+    api_key = os.getenv("MASSIVE_API_KEY")
     if not api_key:
         print("❌ MASSIVE_API_KEY not set")
         return False

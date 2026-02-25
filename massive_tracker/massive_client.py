@@ -24,8 +24,8 @@ def _mask(val: str | None) -> str:
 
 
 def _api_token() -> str | None:
-    # Prefer ACCESS_KEY; fallback to KEY_ID if provided
-    return CFG.massive_api_key or (CFG.massive_key_id or None)
+    # REST API uses MASSIVE_API_KEY only
+    return CFG.massive_api_key
 
 
 def _init_client():

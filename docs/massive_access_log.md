@@ -3,11 +3,11 @@
 ## Status
 - MCP server wrapper script removed; using Python client + REST directly.
 - massive Python SDK present: version 2.0.2.
-- MASSIVE_ACCESS_KEY is the primary token; MASSIVE_KEY_ID can be used as fallback. Code now prefers ACCESS_KEY then KEY_ID.
+- MASSIVE_API_KEY is the REST token; S3 uses MASSIVE_KEY_ID + MASSIVE_SECRET_KEY.
 -
 
 ## Environment keys in workspace
-- MASSIVE_ACCESS_KEY (primary)
+- MASSIVE_API_KEY (REST)
 - MASSIVE_KEY_ID (fallback if needed)
 - MASSIVE_SECRET_KEY
 - MASSIVE_S3_ENDPOINT
@@ -28,7 +28,7 @@
 - Futures: list_futures_aggregates, list_futures_contracts, get_futures_contract_details, list_futures_products, get_futures_product_details, list_futures_quotes, list_futures_trades, list_futures_schedules, list_futures_schedules_by_product_code, list_futures_market_statuses, get_futures_snapshot
 
 ## Notes
-- Prefer MASSIVE_ACCESS_KEY for all REST/SDK calls; code now auto-falls back to MASSIVE_KEY_ID if ACCESS_KEY is missing.
+- Use MASSIVE_API_KEY for all REST/SDK calls; no fallback to S3 keys.
 - Real-time endpoints (snapshots/last trade) are not authorized with current plan; list-oriented endpoints like `list_tickers` work.
 - For S3 flatfile access, ensure the S3 keys above remain set; those are used by ingest in this repo.
 - Re-run smoke tests:

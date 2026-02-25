@@ -359,14 +359,14 @@ def smoke(db_path: str = "data/sqlite/tracker.db"):
     if not tickers:
         raise RuntimeError("Universe empty. Run `python -m massive_tracker.cli init` first.")
 
-    if not os.getenv("MASSIVE_ACCESS_KEY"):
-        print("[SMOKE] MASSIVE_ACCESS_KEY missing. Set it in your environment.")
+    if not os.getenv("MASSIVE_API_KEY"):
+        print("[SMOKE] MASSIVE_API_KEY missing. Set it in your environment.")
         return
 
     tickers = tickers[:3]
     print(f"[blue]Smoke[/blue] tickers={tickers}")
-    key_mask = (os.getenv("MASSIVE_ACCESS_KEY") or "None")[:5] + "*****"
-    print(f"[SMOKE] MASSIVE_ACCESS_KEY detected: {key_mask}")
+    key_mask = (os.getenv("MASSIVE_API_KEY") or "None")[:5] + "*****"
+    print(f"[SMOKE] MASSIVE_API_KEY detected: {key_mask}")
 
     price_rows = []
     missing_cache = []

@@ -110,7 +110,6 @@ python -c "from massive_tracker.config import print_key_status; print_key_status
 Expected output:
 ```
 MASSIVE_API_KEY: zwGIF*****
-MASSIVE_ACCESS_KEY: zwGIF*****
 MASSIVE_SECRET_KEY: wB3aH*****
 MASSIVE_KEY_ID: 3ffec*****
 ```

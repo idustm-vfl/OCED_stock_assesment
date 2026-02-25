@@ -10,5 +10,6 @@
     }
   },
   "terminal.integrated.defaultProfile.linux": "Workspace",
-  "chatgpt.openOnStartup": true
+  "chatgpt.openOnStartup": true,
+  "python.defaultInterpreterPath": ".venv/bin/python"
 }

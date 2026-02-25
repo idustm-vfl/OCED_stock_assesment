@@ -163,8 +163,8 @@ if __name__ == "__main__":
     import os
     
     # Set a test key if not present (for CI environments)
-    if not os.getenv("MASSIVE_ACCESS_KEY"):
-        os.environ["MASSIVE_ACCESS_KEY"] = "test_key_for_validation"
+    if not os.getenv("MASSIVE_API_KEY"):
+        os.environ["MASSIVE_API_KEY"] = "test_key_for_validation"
     
     success = validate_picks()
     validate_missing_table()

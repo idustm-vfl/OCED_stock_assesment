@@ -41,18 +41,18 @@ def test_s3_credentials():
         func_content = content[func_start:func_end]
         
         # Verify correct env vars are used
-        assert 'MASSIVE_ACCESS_KEY' in func_content, "MASSIVE_ACCESS_KEY not found"
+        assert 'MASSIVE_KEY_ID' in func_content, "MASSIVE_KEY_ID not found"
         assert 'AWS_ACCESS_KEY_ID' in func_content, "AWS_ACCESS_KEY_ID not found"
         assert 'MASSIVE_SECRET_KEY' in func_content, "MASSIVE_SECRET_KEY not found"
         assert 'AWS_SECRET_ACCESS_KEY' in func_content, "AWS_SECRET_ACCESS_KEY not found"
         
         # Verify incorrect vars are NOT used in load_flatfile_config
-        # Note: MASSIVE_KEY_ID and MASSIVE_API_KEY may still exist elsewhere in config.py
-        # for backward compatibility in load_runtime_config
+        # Note: MASSIVE_API_KEY may still exist elsewhere in config.py
+        # for runtime config, but should not be used for S3 flatfile access
         lines = func_content.split('\n')
         for line in lines:
             if 'access_key = _first_env' in line:
-                assert 'MASSIVE_KEY_ID' not in line, "Still using MASSIVE_KEY_ID for access_key"
+            assert 'MASSIVE_API_KEY' not in line, "Still using MASSIVE_API_KEY for access_key"
             if 'secret_key = _first_env' in line:
                 assert 'MASSIVE_API_KEY' not in line or 'MASSIVE_SECRET_KEY' in line, "Still using MASSIVE_API_KEY for secret_key"
     

@@ -50,13 +50,13 @@ These conditions are **FATAL ERRORS** and must write to `audit_math` table:
 
 ```bash
 # Run all picker validation tests
-MASSIVE_ACCESS_KEY=test_key pytest tests/test_picker_validation.py -v
+MASSIVE_API_KEY=test_key pytest tests/test_picker_validation.py -v
 
 # Run all report tests
-MASSIVE_ACCESS_KEY=test_key pytest tests/test_reports.py -v
+MASSIVE_API_KEY=test_key pytest tests/test_reports.py -v
 
 # Run all tests
-MASSIVE_ACCESS_KEY=test_key pytest tests/ -v
+MASSIVE_API_KEY=test_key pytest tests/ -v
 ```
 
 ### Integration Tests
@@ -89,7 +89,6 @@ OCED Picker Validation
 
 Runtime Keys:
 MASSIVE_API_KEY: abc12*****
-MASSIVE_ACCESS_KEY: xyz78*****
 MASSIVE_KEY_ID: None
 MASSIVE_SECRET_KEY: qwe45*****
 

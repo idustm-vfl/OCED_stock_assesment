@@ -32,7 +32,6 @@ export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account-key.json"
 
 Go to **Secret Manager** → **Create Secret** and add:
 - `MASSIVE_API_KEY`
-- `MASSIVE_ACCESS_KEY`
 - `MASSIVE_SECRET_KEY`
 - `MASSIVE_KEY_ID`
 - `MASSIVE_S3_ENDPOINT`
@@ -61,7 +60,7 @@ python -m massive_tracker.cli run
 
 ```bash
 export MASSIVE_API_KEY="your-api-key"
-export MASSIVE_ACCESS_KEY="your-access-key"
+export MASSIVE_API_KEY="your-api-key"
 python -m massive_tracker.cli run
 ```
 
