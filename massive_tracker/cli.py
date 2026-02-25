@@ -947,6 +947,60 @@ def sync_flatfiles(
     print(f"\n[BAR COUNTS]")
     for ticker, info in stats['bar_counts'].items():
         print(f"  {ticker}: {info['bars']} bars ({info['first_date']} to {info['last_date']})")
+
+
+@app.command()
+def cache_stats():
+    """Show OHLCV cache statistics."""
+    from .massive_client import get_data_client
+    
+    client = get_data_client()
+    stats = client.get_cache_stats()
+    
+    print("\n[OHLCV CACHE STATISTICS]")
+    print(f"  Tickers cached: {stats['tickers']}")
+    print(f"  Total bars: {stats['bars']:,}")
+    print(f"  Date range: {stats['min_date']} to {stats['max_date']}")
+    
+    if stats['bars'] == 0:
+        print("  (cache is empty)")
+
+
+@app.command()
+def batch_prefetch(lookback_days: int = 60):
+    """
+    Pre-fetch all watchlist tickers using grouped daily API calls.
+    
+    Much faster than per-ticker calls:
+    - 60 days = ~42 trading days = 42 API calls (not 20+ tickers × multiple calls)
+    - Data cached in memory for session
+    - Falls back to SQLite cache for future runs
+    
+    Run this once at startup if you have many tickers (10+).
+    """
+    from .watchlist import get_watchlist
+    from .massive_client import get_data_client
+    
+    watchlist = get_watchlist()
+    if not watchlist:
+        print("[BATCH] No tickers in watchlist. Use 'add-ticker' to add some.")
+        return
+    
+    tickers = [w['ticker'] for w in watchlist]
+    print(f"\n[BATCH PREFETCH] Starting for {len(tickers)} tickers...")
+    print(f"  Lookback: {lookback_days} days")
+    
+    client = get_data_client()
+    tickers_loaded = client.batch_prefetch_all_tickers(tickers, lookback_days=lookback_days)
+    
+    print(f"\n[BATCH PREFETCH] ✓ Complete")
+    print(f"  Tickers loaded: {tickers_loaded}/{len(tickers)}")
+    
+    # Show cache stats
+    stats = client.get_cache_stats()
+    print(f"  Cache now contains: {stats['bars']:,} bars for {stats['tickers']} tickers")
+
+
 if __name__ == "__main__":
     app()
 

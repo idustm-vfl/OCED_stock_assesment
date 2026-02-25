@@ -77,6 +77,9 @@ try:
 except Exception as e:
     print(f"[CACHE] Warning: Could not initialize OHLCV cache: {e}")
 
+# Global singleton data client
+_data_client: Optional['MassiveDataClient'] = None
+
 
 def is_market_hours() -> bool:
     """
@@ -915,7 +918,43 @@ def get_aggs(ticker: str, multiplier: int, timespan: str, from_date: str, to_dat
 
 
 def get_aggs_df(ticker: str, multiplier: int, timespan: str, from_date: str, to_date: str, **kwargs) -> pd.DataFrame:
-    """Fetch aggregates and return a standardized pandas DataFrame."""
+    """
+    Fetch aggregates and return a standardized pandas DataFrame.
+    
+    For daily ('day') aggregates, this uses the caching client to:
+    1. Check SQLite cache first (never re-fetch historical data)
+    2. Fall back to batch prefetch cache if available
+    3. Use REST API as last resort (then save to cache)
+    
+    For intraday aggregates, bypasses cache and hits REST API directly.
+    """
+    # For daily aggregates, try the caching client first
+    if multiplier == 1 and timespan == "day":
+        try:
+            from_dt = datetime.strptime(from_date, "%Y-%m-%d")
+            to_dt = datetime.strptime(to_date, "%Y-%m-%d")
+            lookback_days = (to_dt - from_dt).days + 1
+            
+            client = get_data_client()
+            ohlcv = client.fetch_ohlcv(ticker, lookback_days)
+            
+            if ohlcv is not None:
+                # Convert numpy arrays to DataFrame
+                df = pd.DataFrame({
+                    'open': ohlcv['open'],
+                    'high': ohlcv['high'],
+                    'low': ohlcv['low'],
+                    'close': ohlcv['close'],
+                    'volume': ohlcv['volume']
+                })
+                df['date'] = pd.date_range(start=from_dt, periods=len(df), freq='D', tz='UTC')
+                df['timestamp'] = df['date']
+                return df[['timestamp', 'date', 'open', 'high', 'low', 'close', 'volume']]
+        except Exception as e:
+            print(f"[CACHE] Fallback to REST API due to: {e}")
+            # Fall through to REST API below
+    
+    # For intraday or cache miss, use REST API
     data = get_aggs(ticker, multiplier, timespan, from_date, to_date, **kwargs)
     results = data.get("results") or []
     if not results:
