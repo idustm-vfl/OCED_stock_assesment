@@ -967,7 +967,7 @@ def cache_stats():
 
 
 @app.command()
-def batch_prefetch(lookback_days: int = 60):
+def batch_prefetch(lookback_days: int = 60, db_path: str = "data/sqlite/tracker.db"):
     """
     Pre-fetch all watchlist tickers using grouped daily API calls.
     
