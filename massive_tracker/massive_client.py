@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Optional, Dict, List
 import pandas as pd
 import time
+import os
 import sqlite3
 from pathlib import Path
 import numpy as np
@@ -269,7 +270,7 @@ class MassiveDataClient:
             date_str = current_date.strftime("%Y-%m-%d")
 
             try:
-                _throttle()
+                _throttle(_BATCH_CALL_DELAY)
 
                 # Use grouped daily endpoint - ALL stocks in ONE call
                 url = f"https://api.massive.com/v2/aggs/grouped/locale/us/market/stocks/{date_str}"
@@ -543,14 +544,24 @@ def _ts_from_ns(val: Any) -> str | None:
 
 
 _LAST_CALL_TS = 0.0
-_CALL_DELAY = 15.0 # Strict 5 calls/min = 12s, 15s for safety
 
-def _throttle():
+# Throttle controls (tunable via environment)
+# MASSIVE_CALL_DELAY_SEC: delay for SDK/raw REST calls
+# MASSIVE_BATCH_CALL_DELAY_SEC: delay for grouped daily batch prefetch calls
+_CALL_DELAY = float(os.getenv("MASSIVE_CALL_DELAY_SEC", "0.2"))
+_BATCH_CALL_DELAY = float(os.getenv("MASSIVE_BATCH_CALL_DELAY_SEC", "0.25"))
+
+def _throttle(delay_seconds: float | None = None):
     global _LAST_CALL_TS
+    throttle_delay = _CALL_DELAY if delay_seconds is None else max(0.0, delay_seconds)
+    if throttle_delay <= 0:
+        _LAST_CALL_TS = time.time()
+        return
+
     now = time.time()
     elapsed = now - _LAST_CALL_TS
-    if elapsed < _CALL_DELAY:
-        wait = _CALL_DELAY - elapsed
+    if elapsed < throttle_delay:
+        wait = throttle_delay - elapsed
         print(f"[MASSIVE] Rate limiting... sleeping {wait:.1f}s")
         time.sleep(wait)
     _LAST_CALL_TS = time.time()
@@ -630,38 +641,26 @@ def get_stock_last_price(ticker: str) -> tuple[float | None, str | None, str]:
 
     ticker_clean = ticker.strip().upper()
     
-    # PRIMARY: Stock Snapshot (Last Trade)
+    # PRIMARY + FALLBACK: single stock snapshot request, then parse lastTrade and NBBO
     try:
         data = _sdk_get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker_clean}")
         ticker_data = data.get("ticker") or {}
-        
-        # Get last trade price
-        last_trade = ticker_data.get("lastTrade") or {}
-        price = last_trade.get("p")
-        ts = _ts_from_ns(last_trade.get("t"))
-        
-        if price is not None:
-            return float(price), ts, "massive_rest:snapshot_last_trade"
-            
-    except Exception as e:
-        print(f"[MASSIVE SDK] get_stock_last_price snapshot failed for {ticker_clean}: {e}")
 
-    # FALLBACK: Stock Snapshot (Last Quote - NBBO)
-    try:
-        data = _sdk_get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker_clean}")
-        ticker_data = data.get("ticker") or {}
-        
-        # Get last quote (bid/ask midpoint)
+        last_trade = ticker_data.get("lastTrade") or {}
+        trade_price = last_trade.get("p")
+        if trade_price is not None:
+            ts = _ts_from_ns(last_trade.get("t"))
+            return float(trade_price), ts, "massive_rest:snapshot_last_trade"
+
         last_quote = ticker_data.get("lastQuote") or {}
-        bid = last_quote.get("p")  # Bid price
-        ask = last_quote.get("P")  # Ask price
-        
+        bid = last_quote.get("p")
+        ask = last_quote.get("P")
         if bid is not None and ask is not None:
             mid = (float(bid) + float(ask)) / 2.0
             ts = _ts_from_ns(last_quote.get("t"))
             return float(mid), ts, "massive_rest:snapshot_nbbo"
     except Exception as e:
-        print(f"[MASSIVE SDK] get_stock_last_price NBBO fallback failed for {ticker_clean}: {e}")
+        print(f"[MASSIVE SDK] get_stock_last_price snapshot failed for {ticker_clean}: {e}")
 
     # FINAL FALLBACK: Daily Aggregates
     try:
